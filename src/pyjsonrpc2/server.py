@@ -24,7 +24,6 @@ if TYPE_CHECKING:  # pragma: no cover
 _LOGGER = logging.getLogger(__name__)
 _SENTINEL = object()
 _ID = (str, int, float, type(None))
-_REQUEST_KEYS = frozenset(("jsonrpc", "method", "params", "id"))
 
 
 class JsonRpcError(Exception):
@@ -36,7 +35,7 @@ class JsonRpcError(Exception):
 
     def to_dict(self) -> dict[str, Any]:
         to_return = {"code": self.code, "message": self.message}
-        if self.data is not None:  # pragma: no cover
+        if self.data is not None:
             to_return["data"] = self.data
         return to_return
 
@@ -79,9 +78,9 @@ def rpc_method(
     def decorator(f: F, /) -> F:
         try:
             f.__rpc__ = name  # type: ignore[attr-defined]
-        except (AttributeError, TypeError) as e:
+        except AttributeError as e:
             msg = "Could not set the __rpc__ magic attribute"
-            raise type(e)(msg) from e
+            raise AttributeError(msg) from e
         return f
 
     return decorator if _func is None else decorator(_func)
@@ -130,13 +129,10 @@ class JsonRpcServer:
                 ),
             )
 
-        if not request.keys() <= _REQUEST_KEYS:
-            extra = request.keys() - _REQUEST_KEYS
-            return (_Error.INVALID_REQUEST.with_data(f"Extra keys : {extra}"),)
-
         # Extract and validate "id" entry
         id = request.get("id", _SENTINEL)  # noqa: A001
-        if not isinstance(id, _ID) and id is not _SENTINEL:
+        # `bool` is a subclass of `int` but is not a valid id per spec
+        if id is not _SENTINEL and (isinstance(id, bool) or not isinstance(id, _ID)):
             return (
                 _Error.INVALID_REQUEST.with_data(
                     f"'id' must be a number, string or null (type: {type(id)})"
