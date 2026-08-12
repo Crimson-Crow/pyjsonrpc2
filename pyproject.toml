@@ -1,52 +1,85 @@
 [build-system]
-requires = ["setuptools>=64", "setuptools_scm>=8"]
-build-backend = "setuptools.build_meta"
+requires = ["uv_build>=0.12.0,<0.13"]
+build-backend = "uv_build"
 
 [project]
 name = "pyjsonrpc2"
+version = "1.0.2"
 description = "A flexible Python implementation of the JSON-RPC 2.0 protocol."
 authors = [{ name = "Crimson-Crow", email = "github@crimsoncrow.dev" }]
 maintainers = [{ name = "Crimson-Crow", email = "github@crimsoncrow.dev" }]
 readme = "README.md"
-requires-python = ">=3.8"
-license = { file = "LICENSE.txt" }
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE.txt"]
 keywords = ["jsonrpc", "json-rpc", "rpc", "json", "server", "client"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.8",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: 3 :: Only",
   "Typing :: Typed",
 ]
 dependencies = ["orjson"]
-dynamic = ["version"]
 
 [project.urls]
 "Homepage" = "https://github.com/Crimson-Crow/pyjsonrpc2"
 "Bug Reports" = "https://github.com/Crimson-Crow/pyjsonrpc2/issues"
 "Source" = "https://github.com/Crimson-Crow/pyjsonrpc2"
 
-[tool.setuptools.dynamic]
-version = {attr = "pyjsonrpc2.__version__"}
-
-[tool.setuptools_scm]
+[dependency-groups]
+# ruff and prek are pinned by .pre-commit-config.yaml; tox is a bootstrap tool.
+# Only tools that must see the project's own environment live here.
+dev = ["coverage", "mypy"]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
 
 [tool.ruff]
-target-version = "py38"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["ALL"]
-ignore = ["PT027", "PT009", "RUF012", "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107", "ANN101", "ANN401", "COM812", "ISC001", "E501"]
+ignore = [
+  "D100",
+  "D101",
+  "D102",
+  "D103",
+  "D104",
+  "D105",
+  "D106",
+  "D107",
+  "W191",
+  "E111",
+  "E114",
+  "E117",
+  "D206",
+  "D300",
+  "Q000",
+  "Q001",
+  "Q002",
+  "Q003",
+  "Q004",
+  "COM812",
+  "COM819",
+  "ISC001",
+  "ISC002",
+  "E501",
+  "CPY001",
+  "PT009",
+  "PT027",
+  "ANN401",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Examples are deliberately untyped, print their output, and are not a package.
+"examples/*" = ["ANN", "EM", "ERA001", "INP001", "T201", "TRY003"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -54,6 +87,12 @@ convention = "google"
 [tool.coverage.run]
 branch = true
 parallel = true
+source = ["pyjsonrpc2"]
+
+# Maps the per-interpreter installed copies back onto src/ so `coverage combine`
+# merges them into one file instead of reporting the same module once per env.
+[tool.coverage.paths]
+source = ["src/", "*/site-packages/"]
 
 [tool.coverage.report]
 show_missing = true
@@ -61,26 +100,30 @@ skip_covered = true
 fail_under = 100
 
 [tool.tox]
-legacy_tox_ini = """
-[tox]
-envlist = py{38,39,310,311,312,313},coverage
+requires = ["tox>=4.22"]
+env_list = ["py311", "py312", "py313", "py314", "lint", "type", "coverage"]
 
-[testenv]
-description = run the test driver with {basepython}
-deps =
-    coverage[toml]
-setenv =
-    COVERAGE_FILE={toxworkdir}/.coverage
-commands =
-    coverage run -m unittest discover
+[tool.tox.env_run_base]
+description = "run the test driver with {basepython}"
+deps = ["coverage"]
+set_env.COVERAGE_FILE = "{toxworkdir}/.coverage"
+commands = [["coverage", "run", "-m", "unittest", "discover"]]
 
-[testenv:coverage]
-description = combine coverage data and create report
-deps = coverage[toml]
-depends = py{38,39,310,311,312,313}
-skip_install = True
-commands =
-    coverage combine -q
-    coverage report
-parallel_show_output = True
-"""
+[tool.tox.env.lint]
+description = "check formatting and lint rules"
+skip_install = true
+deps = ["ruff==0.16.2"] # Keep in sync with .pre-commit-config.yaml
+commands = [["ruff", "check", "."], ["ruff", "format", "--check", "."]]
+
+[tool.tox.env.type]
+description = "type check with mypy --strict"
+deps = ["mypy"]
+commands = [["mypy"]]
+
+[tool.tox.env.coverage]
+description = "combine coverage data and create report"
+skip_install = true
+deps = ["coverage"]
+depends = ["py311", "py312", "py313", "py314"]
+commands = [["coverage", "combine", "-q"], ["coverage", "report"]]
+parallel_show_output = true

@@ -52,6 +52,7 @@ class MathServer(JsonRpcServer):
     def calculate_cube(self, x):
         return x**3
 
+
 server = MathServer()
 ```
 
@@ -66,6 +67,7 @@ def add(a, b):
 ```python
 def sub(a, b):
     return a - b
+
 
 server.add_method(sub, name="substract")
 ```
@@ -92,7 +94,7 @@ class AdvancedMathServer(JsonRpcServer):
             raise JsonRpcError(
                 code=-32000,
                 message="Division by zero",
-                data={"numerator": a, "denominator": b}
+                data={"numerator": a, "denominator": b},
             )
         return a / b
 ```
@@ -110,7 +112,7 @@ def factorial(self, n):
         raise JsonRpcError(
             code=-32001,
             message="Invalid input for factorial",
-            data={"input": n, "reason": "Must be non-negative"}
+            data={"input": n, "reason": "Must be non-negative"},
         )
     # ... implementation ...
 ```
@@ -118,7 +120,9 @@ def factorial(self, n):
 ### Request execution
 ```python
 result = server.call('{"jsonrpc": "2.0", "method": "add", "params": [5, 3], "id": 1}')
-result = server.call(b'{"jsonrpc": "2.0", "method": "subtract", "params": [5, 3], "id": 2}')
+result = server.call(
+    b'{"jsonrpc": "2.0", "method": "subtract", "params": [5, 3], "id": 2}'
+)
 ```
 
 ## Tests

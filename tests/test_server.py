@@ -6,10 +6,12 @@ from typing import Any, NoReturn
 
 from pyjsonrpc2.server import JsonRpcError, JsonRpcServer, rpc_method
 
+_LOGGER_NAME = "pyjsonrpc2.server"
+
 
 class Handler(JsonRpcServer):
     to_update: Any = None
-    data: list[str | int] = ["hello", 5]
+    data: list[str | int] = ["hello", 5]  # noqa: RUF012
 
     @rpc_method
     def custom_error(self) -> NoReturn:
@@ -255,44 +257,48 @@ class JsonRpcServerTest(unittest.TestCase):
         )
 
     def test_json_encode_error(self) -> None:
-        self.rpc_call(
-            '{"jsonrpc": "2.0", "method": "returns_unencodable", "id": 1}',
-            {
-                "jsonrpc": "2.0",
-                "error": {"code": -32603, "message": "Internal error"},
-                "id": 1,
-            },
-        )
-        self.rpc_call(
-            '[{"jsonrpc": "2.0", "method": "returns_unencodable", "id": 1}]',
-            [
+        with self.assertLogs(_LOGGER_NAME, "ERROR"):
+            self.rpc_call(
+                '{"jsonrpc": "2.0", "method": "returns_unencodable", "id": 1}',
                 {
                     "jsonrpc": "2.0",
                     "error": {"code": -32603, "message": "Internal error"},
                     "id": 1,
-                }
-            ],
-        )
+                },
+            )
+        with self.assertLogs(_LOGGER_NAME, "ERROR"):
+            self.rpc_call(
+                '[{"jsonrpc": "2.0", "method": "returns_unencodable", "id": 1}]',
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32603, "message": "Internal error"},
+                        "id": 1,
+                    }
+                ],
+            )
 
     def test_method_raises_exception(self) -> None:
-        self.rpc_call(
-            '{"jsonrpc": "2.0", "method": "raises_typeerror", "id": 1}',
-            {
-                "jsonrpc": "2.0",
-                "error": {"code": -32603, "message": "Internal error"},
-                "id": 1,
-            },
-        )
-        self.rpc_call(
-            '[{"jsonrpc": "2.0", "method": "raises_typeerror", "id": 2}]',
-            [
+        with self.assertLogs(_LOGGER_NAME, "ERROR"):
+            self.rpc_call(
+                '{"jsonrpc": "2.0", "method": "raises_typeerror", "id": 1}',
                 {
                     "jsonrpc": "2.0",
                     "error": {"code": -32603, "message": "Internal error"},
-                    "id": 2,
+                    "id": 1,
                 },
-            ],
-        )
+            )
+        with self.assertLogs(_LOGGER_NAME, "ERROR"):
+            self.rpc_call(
+                '[{"jsonrpc": "2.0", "method": "raises_typeerror", "id": 2}]',
+                [
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32603, "message": "Internal error"},
+                        "id": 2,
+                    },
+                ],
+            )
 
     def test_invalid_params(self) -> None:
         self.rpc_call(
