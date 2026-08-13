@@ -24,7 +24,7 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
   "Typing :: Typed",
 ]
-dependencies = ["orjson"]
+dependencies = ["orjson>=3.9"]
 
 [project.urls]
 "Homepage" = "https://github.com/Crimson-Crow/pyjsonrpc2"
@@ -78,7 +78,6 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Examples are deliberately untyped, print their output, and are not a package.
 "examples/*" = ["ANN", "EM", "ERA001", "INP001", "T201", "TRY003"]
 
 [tool.ruff.lint.pydocstyle]
@@ -100,14 +99,30 @@ skip_covered = true
 fail_under = 100
 
 [tool.tox]
-requires = ["tox>=4.22"]
-env_list = ["py311", "py312", "py313", "py314", "lint", "type", "coverage"]
+requires = ["tox>=4.22", "tox-uv"]
+env_list = [
+  "py311",
+  "py312",
+  "py313",
+  "py314",
+  "mindeps",
+  "lint",
+  "type",
+  "coverage",
+]
 
 [tool.tox.env_run_base]
 description = "run the test driver with {basepython}"
 deps = ["coverage"]
 set_env.COVERAGE_FILE = "{toxworkdir}/.coverage"
 commands = [["coverage", "run", "-m", "unittest", "discover"]]
+
+[tool.tox.env.mindeps]
+description = "run the test driver against the lowest declared dependency versions"
+base_python = ["py311"]
+uv_resolution = "lowest-direct"
+deps = []
+commands = [["python", "-m", "unittest", "discover"]]
 
 [tool.tox.env.lint]
 description = "check formatting and lint rules"

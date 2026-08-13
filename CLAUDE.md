@@ -14,14 +14,15 @@ Requires Python >=3.11. Only runtime dependency is `orjson`. Built with the `uv_
 uv sync                                # install package + dev group (coverage, mypy)
 uv run python -m unittest              # run all tests
 uv run python -m unittest tests.test_server.JsonRpcServerTest.test_positional_parameters  # single test
-tox -p                                 # full gate: py311–py314 + lint + type + coverage
+tox -p                                 # full gate: py311–py314 + mindeps + lint + type + coverage
+tox -e mindeps                         # tests against the declared dependency floor
 tox -e lint                            # ruff check + ruff format --check
 tox -e type                            # mypy (strict, via [tool.mypy])
 uv run mypy                            # same check, using the project env
 prek run --all-files                   # all hooks over the whole tree
 ```
 
-`ruff`, `tox`, and `prek` are expected as `uv tool install`-ed globals, not project dependencies. Only `coverage` and `mypy` live in `[dependency-groups] dev`, because they are the two that must see the project's own environment.
+`ruff`, `tox`, and `prek` are expected as `uv tool install`-ed globals, not project dependencies. The tox config lists `tox-uv` in `requires`, so tox provisions it if the global install lacks it; `mindeps` needs it for `uv_resolution`. Only `coverage` and `mypy` live in `[dependency-groups] dev`, because they are the two that must see the project's own environment.
 
 Tests use `unittest`, not pytest. Coverage is enforced at `fail_under = 100`, ruff runs with `select = ["ALL"]`, and `strict = true` is set in `[tool.mypy]` — so a bare `mypy` is already strict. New code must be fully typed and either covered or explicitly marked `# pragma: no cover`.
 
