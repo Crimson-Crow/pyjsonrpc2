@@ -4,26 +4,39 @@ __all__ = ["JsonRpcError", "JsonRpcServer", "rpc_method"]
 
 import inspect
 import logging
-from enum import Enum
-from typing import TYPE_CHECKING, Any, TypeVar, overload
+from enum import Enum, auto
+from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar, overload
 
 from orjson import Fragment, dumps, loads
+
+
+# Marks an absent "id" key. A single-member enum rather than a bare `object()`
+# so that it is expressible in annotations and narrowed by `is` comparisons.
+class _Sentinel(Enum):
+    SENTINEL = auto()
+
+
+_LOGGER = logging.getLogger(__name__)
+_SENTINEL = _Sentinel.SENTINEL
+_ID = (str, int, float, type(None))
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable, Sequence
 
     F = TypeVar("F", bound=Callable[..., Any])
 
+    # A request id, once validated against _ID. `_Sentinel` means "notification".
+    _Id: TypeAlias = str | float | None
+    _MaybeId: TypeAlias = _Id | _Sentinel
+
     # Arguments splatted into _respond(). The arity encodes the outcome:
     # 1 -> error before an id could be trusted, 2 -> error for a known id,
     # 3 -> success (the trailing False selects "result" over "error").
-    _Outcome = (
-        tuple[dict[str, Any]] | tuple[dict[str, Any], Any] | tuple[Any, Any, bool]
+    _Outcome: TypeAlias = (
+        tuple[dict[str, Any]]
+        | tuple[dict[str, Any], _MaybeId]
+        | tuple[Any, _MaybeId, bool]
     )
-
-_LOGGER = logging.getLogger(__name__)
-_SENTINEL = object()
-_ID = (str, int, float, type(None))
 
 
 class JsonRpcError(Exception):
@@ -34,7 +47,7 @@ class JsonRpcError(Exception):
         self.data = data
 
     def to_dict(self) -> dict[str, Any]:
-        to_return = {"code": self.code, "message": self.message}
+        to_return: dict[str, Any] = {"code": self.code, "message": self.message}
         if self.data is not None:
             to_return["data"] = self.data
         return to_return
@@ -53,8 +66,7 @@ class _Error(Enum):
 
 def _respond(
     obj: Any,
-    # mypy poorly supports sentinels
-    id: str | float | _SENTINEL | None = None,  # type: ignore[valid-type] # noqa: A002
+    id: _MaybeId = None,  # noqa: A002
     error: bool = True,  # noqa: FBT001 FBT002
 ) -> dict[str, Any] | None:
     return (
@@ -97,7 +109,7 @@ class JsonRpcServer:
         self._dumps_kwargs = dumps_kwargs or {}
         self.add_object(self)
 
-    def add_object(self, obj: Any, *, prefix: str = "") -> None:
+    def add_object(self, obj: object, *, prefix: str = "") -> None:
         for name, method in inspect.getmembers(obj, inspect.isroutine):
             if hasattr(method, "__rpc__"):
                 self.add_method(method, name=prefix + (method.__rpc__ or name))
@@ -111,7 +123,9 @@ class JsonRpcServer:
             raise ValueError(msg)
         self._methods[name] = method
 
-    def _validate_and_execute(self, request: dict[str, Any]) -> _Outcome:  # noqa: C901, PLR0911, PLR0912
+    # `request` is an arbitrary decoded JSON value, not necessarily an object:
+    # the "jsonrpc" lookup below is what rejects the non-object cases.
+    def _validate_and_execute(self, request: Any) -> _Outcome:  # noqa: C901, PLR0911, PLR0912
         # Validate "jsonrpc" entry
         try:
             if request["jsonrpc"] != "2.0":
@@ -198,7 +212,7 @@ class JsonRpcServer:
         self, raw_request: bytes | bytearray | memoryview | str
     ) -> dict[str, Any] | list[Fragment] | None:
         try:
-            request: dict[str, Any] | list[dict[str, Any]] = loads(raw_request)
+            request = loads(raw_request)
         except ValueError as e:
             return _respond(_Error.PARSE_ERROR.with_data(str(e)))
         if isinstance(request, list):  # Batch request
