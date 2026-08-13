@@ -1,6 +1,5 @@
 """This example module details the different ways of adding rpc methods."""
 
-# mypy: ignore-errors
 import math
 
 from pyjsonrpc2.server import JsonRpcServer, rpc_method

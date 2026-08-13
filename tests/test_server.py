@@ -77,9 +77,9 @@ class JsonRpcServerTest(unittest.TestCase):
         rpc: JsonRpcServer | None = None,
     ) -> None:
         raw_response = (self.rpc if rpc is None else rpc).call(request)
-        self.assertIsNotNone(raw_response)
-        # https://github.com/python/mypy/issues/5088
-        response = json.loads(raw_response)  # type: ignore[arg-type]
+        if raw_response is None:
+            self.fail("Expected a response, got None")
+        response = json.loads(raw_response)
 
         if remove_data:
             if isinstance(response, list):
