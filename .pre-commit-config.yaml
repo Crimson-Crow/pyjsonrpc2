@@ -1,36 +1,36 @@
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v6.0.0
+  - repo: builtin
     hooks:
       - id: check-toml
+        groups: [lint]
       - id: check-yaml
+        groups: [lint]
       - id: check-merge-conflict
-      - id: debug-statements
+        groups: [lint]
       - id: end-of-file-fixer
+        groups: [format]
       - id: mixed-line-ending
         args: [--fix=lf]
+        groups: [format]
       - id: trailing-whitespace
-
-  - repo: https://github.com/abravalheri/validate-pyproject
-    rev: v0.25
-    hooks:
-      - id: validate-pyproject
+        groups: [format]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.2
+    rev: v0.16.3
     hooks:
       - id: ruff-check
+        types_or: [python, pyi, pyproject]
         args: [--fix]
+        groups: [lint]
       - id: ruff-format
+        types_or: [python, pyi, markdown]
+        groups: [format]
 
-  # Runs the project's own mypy against the real dependency set, over the whole
-  # tree (see `files` in [tool.mypy]) rather than only the staged files.
-  - repo: local
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.0
     hooks:
       - id: mypy
-        name: mypy
-        entry: uv run mypy
-        language: system
-        types_or: [python, pyi]
+        args: []
         pass_filenames: false
-        require_serial: true
+        additional_dependencies: ["orjson>=3.9"]
+        groups: [lint]

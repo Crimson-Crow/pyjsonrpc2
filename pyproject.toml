@@ -1,48 +1,32 @@
 [build-system]
-requires = ["uv_build>=0.12.0,<0.13"]
 build-backend = "uv_build"
+requires = [ "uv-build>=0.12,<0.13" ]
 
 [project]
 name = "pyjsonrpc2"
 version = "1.0.2"
 description = "A flexible Python implementation of the JSON-RPC 2.0 protocol."
-authors = [{ name = "Crimson-Crow", email = "github@crimsoncrow.dev" }]
-maintainers = [{ name = "Crimson-Crow", email = "github@crimsoncrow.dev" }]
 readme = "README.md"
-requires-python = ">=3.11"
+keywords = [ "client", "json", "json-rpc", "jsonrpc", "rpc", "server" ]
 license = "MIT"
-license-files = ["LICENSE.txt"]
-keywords = ["jsonrpc", "json-rpc", "rpc", "json", "server", "client"]
+license-files = [ "LICENSE.txt" ]
+maintainers = [ { name = "Crimson-Crow", email = "github@crimsoncrow.dev" } ]
+authors = [ { name = "Crimson-Crow", email = "github@crimsoncrow.dev" } ]
+requires-python = ">=3.11"
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
-  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
-  "Programming Language :: Python :: 3 :: Only",
   "Typing :: Typed",
 ]
-dependencies = ["orjson>=3.9"]
-
-[project.urls]
-"Homepage" = "https://github.com/Crimson-Crow/pyjsonrpc2"
-"Bug Reports" = "https://github.com/Crimson-Crow/pyjsonrpc2/issues"
-"Source" = "https://github.com/Crimson-Crow/pyjsonrpc2"
-
-[dependency-groups]
-# ruff and prek are pinned by .pre-commit-config.yaml; tox is a bootstrap tool.
-# Only tools that must see the project's own environment live here.
-dev = ["coverage", "mypy"]
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-files = ["src", "tests"]
-
-[tool.ruff]
-target-version = "py311"
+dependencies = [ "orjson>=3.9" ]
+urls."Bug Reports" = "https://github.com/Crimson-Crow/pyjsonrpc2/issues"
+urls.Homepage = "https://github.com/Crimson-Crow/pyjsonrpc2"
+urls.Source = "https://github.com/Crimson-Crow/pyjsonrpc2"
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -76,69 +60,59 @@ ignore = [
   "PT027",
   "ANN401",
 ]
+per-file-ignores."examples/*" = [ "ANN", "EM", "ERA001", "INP001", "T201", "TRY003" ]
+pydocstyle.convention = "google"
 
-[tool.ruff.lint.per-file-ignores]
-"examples/*" = ["ANN", "EM", "ERA001", "INP001", "T201", "TRY003"]
+[tool.mypy]
+files = [ "src", "tests" ]
+python_version = "3.11"
+strict = true
 
-[tool.ruff.lint.pydocstyle]
-convention = "google"
-
-[tool.coverage.run]
-branch = true
-parallel = true
-source = ["pyjsonrpc2"]
-
-# Maps the per-interpreter installed copies back onto src/ so `coverage combine`
-# merges them into one file instead of reporting the same module once per env.
-[tool.coverage.paths]
-source = ["src/", "*/site-packages/"]
-
-[tool.coverage.report]
-show_missing = true
-skip_covered = true
-fail_under = 100
+[tool.coverage]
+run.branch = true
+run.parallel = true
+run.source_pkgs = [ "pyjsonrpc2" ]
+report.fail_under = 100
+report.show_missing = true
+report.skip_covered = true
+paths.source = [ "src/", "*/site-packages/" ]
 
 [tool.tox]
-requires = ["tox>=4.22", "tox-uv"]
+requires = [ "tox>=4.53", "tox-uv" ]
 env_list = [
-  "py311",
-  "py312",
-  "py313",
-  "py314",
+  { prefix = "3.", start = 11 },
   "mindeps",
-  "lint",
-  "type",
+#  "prek-lint",
+#  "prek-format",
   "coverage",
 ]
 
 [tool.tox.env_run_base]
 description = "run the test driver with {basepython}"
-deps = ["coverage"]
-set_env.COVERAGE_FILE = "{toxworkdir}/.coverage"
-commands = [["coverage", "run", "-m", "unittest", "discover"]]
+deps = [ "coverage" ]
+set_env.COVERAGE_FILE = "{work_dir}/.coverage"
+commands = [ [ "coverage", "run", "-m", "unittest", "discover" ] ]
 
 [tool.tox.env.mindeps]
 description = "run the test driver against the lowest declared dependency versions"
-base_python = ["py311"]
+base_python = [ "3.11" ]
 uv_resolution = "lowest-direct"
 deps = []
-commands = [["python", "-m", "unittest", "discover"]]
+commands = [ [ "python", "-m", "unittest", "discover" ] ]
 
-[tool.tox.env.lint]
-description = "check formatting and lint rules"
-skip_install = true
-deps = ["ruff==0.16.2"] # Keep in sync with .pre-commit-config.yaml
-commands = [["ruff", "check", "."], ["ruff", "format", "--check", "."]]
-
-[tool.tox.env.type]
-description = "type check with mypy --strict"
-deps = ["mypy"]
-commands = [["mypy"]]
+#[tool.tox.env_base.prek]
+#factors = [ [ "lint", "format" ] ]
+#description = "run the {factor:0} hook group"
+#skip_install = true
+#deps = [ "prek" ]
+#env_dir = "{work_dir}/prek"
+#recreate_commands = [ [ "{env_python}", "-Im", "prek", "clean" ] ]
+#commands = [ [ "prek", "run", "--all-files", "--group", "{factor:0}" ] ]
 
 [tool.tox.env.coverage]
 description = "combine coverage data and create report"
 skip_install = true
-deps = ["coverage"]
-depends = ["py311", "py312", "py313", "py314"]
-commands = [["coverage", "combine", "-q"], ["coverage", "report"]]
+deps = [ "coverage" ]
+depends = [ "3.*" ]
+commands = [ [ "coverage", "combine" ], [ "coverage", "report" ] ]
 parallel_show_output = true
