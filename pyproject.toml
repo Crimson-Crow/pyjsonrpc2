@@ -82,10 +82,14 @@ requires = [ "tox>=4.53", "tox-uv" ]
 env_list = [
   { prefix = "3.", start = 11 },
   "mindeps",
-#  "prek-lint",
-#  "prek-format",
   "coverage",
 ]
+
+[tool.tox.gh.python]
+"3.11" = [ "3.11", "mindeps" ]
+"3.12" = [ "3.12" ]
+"3.13" = [ "3.13" ]
+"3.14" = [ "3.14" ]
 
 [tool.tox.env_run_base]
 description = "run the test driver with {basepython}"
@@ -100,14 +104,12 @@ uv_resolution = "lowest-direct"
 deps = []
 commands = [ [ "python", "-m", "unittest", "discover" ] ]
 
-#[tool.tox.env_base.prek]
-#factors = [ [ "lint", "format" ] ]
-#description = "run the {factor:0} hook group"
-#skip_install = true
-#deps = [ "prek" ]
-#env_dir = "{work_dir}/prek"
-#recreate_commands = [ [ "{env_python}", "-Im", "prek", "clean" ] ]
-#commands = [ [ "prek", "run", "--all-files", "--group", "{factor:0}" ] ]
+[tool.tox.env.prek]
+description = "run pre-commit hooks"
+skip_install = true
+deps = [ "prek" ]
+recreate_commands = [ [ "{env_python}", "-Im", "prek", "clean" ] ]
+commands = [ [ "prek", "run", "--all-files" ] ]
 
 [tool.tox.env.coverage]
 description = "combine coverage data and create report"

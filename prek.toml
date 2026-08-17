@@ -1,0 +1,87 @@
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  {
+    id = "check-toml"
+  },
+  {
+    id = "check-yaml"
+  },
+  {
+    id = "check-merge-conflict"
+  },
+  {
+    id = "end-of-file-fixer"
+  },
+  {
+    id = "mixed-line-ending",
+    args = ["--fix=lf"]
+  },
+  {
+    id = "trailing-whitespace"
+  }
+]
+
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.16.3"
+hooks = [
+  {
+    id = "ruff-check",
+    types_or = [
+      "python",
+      "pyi",
+      "pyproject"
+    ],
+    args = ["--fix"],
+    stages = ["pre-commit"]
+  },
+  {
+    id = "ruff-check",
+    alias = "ruff-check-ci",
+    name = "ruff check (annotate)",
+    types_or = [
+      "python",
+      "pyi",
+      "pyproject"
+    ],
+    stages = ["manual"]
+  },
+  {
+    id = "ruff-format",
+    types_or = [
+      "python",
+      "pyi",
+      "markdown"
+    ],
+    stages = ["pre-commit"]
+  },
+  {
+    id = "ruff-format",
+    alias = "ruff-format-ci",
+    name = "ruff format (annotate)",
+    types_or = [
+      "python",
+      "pyi",
+      "markdown"
+    ],
+    args = ["--check"],
+    stages = ["manual"]
+  }
+]
+
+[[repos]]
+repo = "https://github.com/pre-commit/mirrors-mypy"
+rev = "v2.3.0"
+hooks = [
+  {
+    id = "mypy",
+    args = [],
+    pass_filenames = false,
+    additional_dependencies = ["orjson>=3.9"]
+  }
+]
