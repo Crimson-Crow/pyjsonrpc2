@@ -32,8 +32,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.0.1
-      - run: uv tool install --python ${{ matrix.python-version }} tox --with tox-uv --with tox-gh
+      - run: uv tool install tox --with tox-uv --with tox-gh
       - run: tox
+        env:
+          TOX_GH_MAJOR_MINOR: ${{ matrix.python-version }}
       - uses: actions/upload-artifact@v7.0.1
         with:
           name: coverage-${{ matrix.python-version }}
