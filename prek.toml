@@ -75,13 +75,20 @@ hooks = [
 ]
 
 [[repos]]
-repo = "https://github.com/pre-commit/mirrors-mypy"
-rev = "v2.3.0"
+repo = "https://github.com/facebook/pyrefly-pre-commit"
+rev = "1.2.0"
 hooks = [
   {
-    id = "mypy",
-    args = [],
-    pass_filenames = false,
+    id = "pyrefly-check",
+    stages = ["pre-commit"],
+    additional_dependencies = ["orjson>=3.9"]
+  },
+  {
+    id = "pyrefly-check",
+    alias = "pyrefly-check-ci",
+    name = "pyrefly check (annotate)",
+    args = ["--output-format", "full-text-with-github"],
+    stages = ["manual"],
     additional_dependencies = ["orjson>=3.9"]
   }
 ]

@@ -63,10 +63,12 @@ ignore = [
 per-file-ignores."examples/*" = [ "ANN", "EM", "ERA001", "INP001", "T201", "TRY003" ]
 pydocstyle.convention = "google"
 
-[tool.mypy]
-files = [ "src", "tests" ]
-python_version = "3.11"
-strict = true
+[tool.pyrefly]
+project-includes = [ "src", "tests" ]
+python-version = "3.11"
+preset = "strict"
+# `typing.override` is 3.12+, setUpClass in tests.
+errors.missing-override-decorator = false
 
 [tool.coverage]
 run.branch = true

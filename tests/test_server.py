@@ -59,7 +59,10 @@ class JsonRpcServerTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.rpc = Handler(methods={"multiply": lambda a, b: a * b})
+        def multiply(a: float, b: float) -> float:
+            return a * b
+
+        cls.rpc = Handler(methods={"multiply": multiply})
 
     @staticmethod
     def remove_data(response: dict[str, Any]) -> None:

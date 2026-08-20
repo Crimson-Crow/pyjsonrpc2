@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar, overload
 from orjson import Fragment, dumps, loads
 
 
-# Marks an absent "id" key. A single-member enum rather than a bare `object()`
-# so that it is expressible in annotations and narrowed by `is` comparisons.
 class _Sentinel(Enum):
     SENTINEL = auto()
 
@@ -29,14 +27,10 @@ if TYPE_CHECKING:  # pragma: no cover
     _Id: TypeAlias = str | float | None
     _MaybeId: TypeAlias = _Id | _Sentinel
 
-    # Arguments splatted into _respond(). The arity encodes the outcome:
-    # 1 -> error before an id could be trusted, 2 -> error for a known id,
-    # 3 -> success (the trailing False selects "result" over "error").
-    _Outcome: TypeAlias = (
-        tuple[dict[str, Any]]
-        | tuple[dict[str, Any], _MaybeId]
-        | tuple[Any, _MaybeId, bool]
-    )
+    # Arguments splatted into _respond(): the payload, the id to answer under,
+    # and whether the payload is an error. An id of None means the failure came
+    # before an id could be trusted, and is answered with "id": null.
+    _Outcome: TypeAlias = tuple[Any, _MaybeId, bool]
 
 
 class JsonRpcError(Exception):
@@ -133,14 +127,18 @@ class JsonRpcServer:
                     _Error.INVALID_REQUEST.with_data(
                         f"Wrong rpc version (got '{request['jsonrpc']!s}')"
                     ),
+                    None,
+                    True,
                 )
         except KeyError:
-            return (_Error.INVALID_REQUEST.with_data("Missing 'jsonrpc' key"),)
+            return _Error.INVALID_REQUEST.with_data("Missing 'jsonrpc' key"), None, True
         except TypeError:
             return (
                 _Error.INVALID_REQUEST.with_data(
                     f"Not an object (type: {type(request)})"
                 ),
+                None,
+                True,
             )
 
         # Extract and validate "id" entry
@@ -151,23 +149,27 @@ class JsonRpcServer:
                 _Error.INVALID_REQUEST.with_data(
                     f"'id' must be a number, string or null (type: {type(id)})"
                 ),
+                None,
+                True,
             )
 
         # Extract and validate "method" entry
         try:
             method_name = request["method"]
         except KeyError:
-            return (_Error.INVALID_REQUEST.with_data("Missing 'method' key"),)
+            return _Error.INVALID_REQUEST.with_data("Missing 'method' key"), None, True
         if not isinstance(method_name, str):
             return (
                 _Error.INVALID_REQUEST.with_data(
                     f"'method' must be a string (type: {type(method_name)})"
                 ),
+                None,
+                True,
             )
 
         # Extract and validate "params" entry
         args: Sequence[Any] = ()
-        kwargs = {}
+        kwargs: dict[str, Any] = {}
         if "params" in request:  # LBYL because its absence is not exceptional behavior
             params = request["params"]
             if isinstance(params, dict):
@@ -179,25 +181,27 @@ class JsonRpcServer:
                     _Error.INVALID_REQUEST.with_data(
                         f"'params' must be an array or an object (type: {type(params)})"
                     ),
+                    None,
+                    True,
                 )
 
         # Find rpc method in registry
         try:
             method = self._methods[method_name]
         except KeyError:
-            return _Error.METHOD_NOT_FOUND.value, id
+            return _Error.METHOD_NOT_FOUND.value, id, True
 
         # Call method and handle error
         try:
             try:
                 result = method(*args, **kwargs)
             except JsonRpcError as e:  # Custom error
-                return e.to_dict(), id
+                return e.to_dict(), id, True
             except TypeError as e:
                 try:  # Check if it is caused by invalid params
                     inspect.signature(method).bind(*args, **kwargs)
                 except TypeError:
-                    return _Error.INVALID_PARAMS.with_data(str(e)), id
+                    return _Error.INVALID_PARAMS.with_data(str(e)), id, True
                 raise
         except Exception as e:
             _LOGGER.exception(
@@ -205,7 +209,7 @@ class JsonRpcServer:
                 "notification" if id is _SENTINEL else str(id),
                 method_name,
             )
-            return _Error.INTERNAL_ERROR.with_data(str(e)), id
+            return _Error.INTERNAL_ERROR.with_data(str(e)), id, True
         return result, id, False
 
     def _decode_and_parse(

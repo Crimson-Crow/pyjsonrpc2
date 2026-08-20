@@ -13,7 +13,7 @@ A flexible Python implementation of the JSON-RPC 2.0 protocol (currently server-
 - Multiple method registration patterns (class-based, individual methods, lambda, etc.)
 - Automatic & custom error handling capabilities
 - Support for both string and bytes input
-- Complete type hints (passes `mypy --strict`)
+- Complete type hints (passes `pyrefly` on the `strict` preset)
 - Extensive unit tests (full coverage)
 - [Semantic versioning](https://semver.org/) adherence
 

@@ -19,7 +19,7 @@ tox -e 3.11                            # one interpreter (env names are "3.11" �
 tox -e mindeps                         # tests against the declared dependency floor
 tox -e prek                            # all hooks, via a tox-managed prek instead of the global
 prek run --all-files                   # every hook over the whole tree
-prek run mypy --all-files              # mypy alone (strict, via [tool.mypy]), in the hook's isolated env
+prek run pyrefly-check --all-files     # type checking alone (strict preset, via [tool.pyrefly]), in the hook's isolated env
 prek run --all-files --hook-stage manual  # what CI runs: report-only ruff, no rewriting
 ```
 
@@ -42,24 +42,33 @@ Two further trade-offs: tox silently ignores the `gh` table when the plugin is a
 
 `ruff`, `tox`, and `prek` are expected as `uv tool install`-ed globals, not project dependencies. The tox config lists `tox-uv` in `requires`, so tox provisions it if the global install lacks it; `mindeps` needs it for `uv_resolution`. There are **no dependency groups at all**: every tool is either a global, installed by the tox env that runs it (`coverage`), or supplied by `prek` in an isolated hook env. Run the tooling through `tox` or `prek`, never `uv run` — `.venv` holds only the package and `orjson`.
 
-Tests use `unittest`, not pytest. Coverage is enforced at `fail_under = 100`, ruff runs with `select = ["ALL"]`, and `strict = true` is set in `[tool.mypy]` — so a bare `mypy` is already strict. New code must be fully typed and either covered or explicitly marked `# pragma: no cover`.
+Tests use `unittest`, not pytest. Coverage is enforced at `fail_under = 100`, ruff runs with `select = ["ALL"]`, and type checking is `preset = "strict"` in `[tool.pyrefly]` — so a bare `pyrefly check` from the repo root is already strict. New code must be fully typed and either covered or explicitly marked `# pragma: no cover`.
 
-One thing must be kept in sync by hand: the mypy hook's `additional_dependencies` in `prek.toml`, against `dependencies` in `[project]`. The hook runs in an isolated env, so any new runtime dependency must be repeated there or strict mode will fail on the unresolvable import.
+One thing must be kept in sync by hand: `additional_dependencies` on **both** `pyrefly-check` entries in `prek.toml`, against `dependencies` in `[project]`. The hooks run in isolated envs, so any new runtime dependency must be repeated in both or the strict preset will fail on the unresolvable import. Note that `pyjsonrpc2` itself is *not* installed in those envs — pyrefly resolves the package from `src/` because `project-includes` lists it.
+
+Type checking was mypy until the switch to pyrefly (for GitHub annotations, see below). Two consequences of the swap are load-bearing:
+
+- the strict preset enables `implicit-any` and `unused-ignore`, which mypy's `strict = true` does not fully cover. Empty containers need an explicit annotation (`kwargs: dict[str, Any] = {}`) and lambdas need typed parameters, so prefer a nested `def`;
+- `errors.missing-override-decorator = false` is set because that rule wants `typing.override`, which is 3.12+, and `typing_extensions` is not a dependency. Drop the opt-out if the floor ever rises to 3.12.
+
+The swap also forced `_Outcome` to become a fixed-length tuple, because pyrefly cannot distribute an unpacked union-of-tuples across a call signature — see the request pipeline section below. The only suppression left in `src/` is the pre-existing `# type: ignore[attr-defined]` on `f.__rpc__`, which pyrefly honours. Because `unused-ignore` is on, a stale suppression is a hard error, so suppressions here are verified rather than decorative.
 
 Note that ruff formats Python code blocks inside Markdown, so `README.md` is subject to `ruff format`.
 
 ### Hooks: local vs CI
 
-`prek.toml` registers both `ruff-check` and `ruff-format` **twice**, split by `stages`:
+`prek.toml` registers `ruff-check`, `ruff-format`, and `pyrefly-check` **twice** each, split by `stages`:
 
-- the `pre-commit` variants rewrite the tree (`--fix`; formatting in place). They are what the git hook and a bare `prek run` use;
-- the `manual` variants (`ruff-check-ci`, `ruff-format-ci`) only report — no `--fix`, and `--check` for the formatter — so nothing is repaired out from under the report.
+- the `pre-commit` variants are for humans: ruff rewrites the tree (`--fix`; formatting in place) and pyrefly prints its default readable diagnostics. They are what the git hook and a bare `prek run` use;
+- the `manual` variants (`ruff-check-ci`, `ruff-format-ci`, `pyrefly-check-ci`) are for CI. The ruff ones only report — no `--fix`, and `--check` for the formatter — so nothing is repaired out from under the report. `pyrefly-check-ci` adds `--output-format full-text-with-github`.
 
-`.github/workflows/tests.yml` selects the reporting variants with `--hook-stage manual` and sets `RUFF_OUTPUT_FORMAT=github` at the job level, which **both** subcommands honour (`ruff format` accepts `--output-format` when `--check` is passed, contrary to what the formatter docs page lists). Violations become GitHub annotations; the other hooks ignore the variable.
+`.github/workflows/tests.yml` selects the reporting variants with `--hook-stage manual` and sets `RUFF_OUTPUT_FORMAT=github` at the job level, which **both** ruff subcommands honour (`ruff format` accepts `--output-format` when `--check` is passed, contrary to what the formatter docs page lists). Violations become GitHub annotations; the other hooks ignore the variable.
 
-Hooks without a `stages` key (the builtins, mypy) are eligible for every stage and therefore run in both. The builtin fixers still rewrite files in CI, and that is fine: prek fails any hook that modifies a file, and the action passes `--show-diff-on-failure`, so the diff *is* their report.
+pyrefly does not read that variable — it takes the flag instead, and needs the `full-text-with-github` format rather than plain `github`: the latter emits *only* `::error` workflow commands, which are collapsed in the log view, so the run log would show annotations and no readable diagnostics. `full-text-with-github` emits both.
 
-Gotcha if hook `groups` are ever reintroduced: passing `--group`/`--no-group` without an explicit `--stage` disables the default `pre-commit` stage filter, which would run both variants of each ruff hook. Pair group selectors with `--stage pre-commit`.
+Hooks without a `stages` key (the builtins) are eligible for every stage and therefore run in both. The builtin fixers still rewrite files in CI, and that is fine: prek fails any hook that modifies a file, and the action passes `--show-diff-on-failure`, so the diff *is* their report.
+
+Gotcha if hook `groups` are ever reintroduced: passing `--group`/`--no-group` without an explicit `--stage` disables the default `pre-commit` stage filter, which would run both variants of each duplicated hook. Pair group selectors with `--stage pre-commit`.
 
 ## Architecture
 
@@ -70,10 +79,12 @@ Everything lives in `src/pyjsonrpc2/server.py`. `src/pyjsonrpc2/__init__.py` re-
 `call()` → `_decode_and_parse()` → `_validate_and_execute()` (once per request) → `_respond()` → `_encode()`.
 
 - `_decode_and_parse` handles JSON parsing and the batch/single split. Batch elements are validated+executed individually, each serialized immediately, then wrapped in `orjson.Fragment` so the outer `dumps` splices pre-serialized bytes instead of re-encoding them.
-- `_validate_and_execute` returns a **tuple that is splatted into `_respond(obj, id, error)`**. The arity encodes the outcome — see the `_Outcome` alias in the `TYPE_CHECKING` block — and is the single most confusing convention in the file:
-  - 1-tuple `(error_dict,)` → protocol-level failure before an id could be trusted; responds with `"id": null`.
-  - 2-tuple `(error_dict, id)` → failure attributable to a specific request.
-  - 3-tuple `(result, id, False)` → success (the `False` flips `_respond` from the `"error"` key to `"result"`).
+- `_validate_and_execute` returns a **fixed 3-tuple that is splatted into `_respond(obj, id, error)`** — the `_Outcome` alias in the `TYPE_CHECKING` block. Every return site spells out all three:
+  - `(error_dict, None, True)` → protocol-level failure before an id could be trusted; the `None` responds with `"id": null`.
+  - `(error_dict, id, True)` → failure attributable to a specific request.
+  - `(result, id, False)` → success (the `False` flips `_respond` from the `"error"` key to `"result"`).
+
+  This was originally a union of 1-, 2-, and 3-tuples whose *arity* encoded the outcome, leaning on `_respond`'s defaults to fill the gaps. Only mypy verified that: it expands a union at a call site and checks each member separately ("union math"), whereas pyrefly flattens the union into one unknown-length tuple and assigns the union of every element type to every parameter, which fails. Keep the tuple fixed-length — reintroducing the arity trick would need a per-call-site `# pyrefly: ignore[bad-argument-type]`.
 - `_encode` returns `None` for a falsy response (notification, or a batch that produced no responses), which is how "emit nothing" propagates out of `call()`.
 
 ### Notifications
