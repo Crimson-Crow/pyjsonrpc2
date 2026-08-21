@@ -81,7 +81,7 @@ hooks = [
   {
     id = "pyrefly-check",
     stages = ["pre-commit"],
-    additional_dependencies = ["orjson>=3.9"]
+    additional_dependencies = ["orjson>=3.9", "pyperf"]
   },
   {
     id = "pyrefly-check",
@@ -89,6 +89,6 @@ hooks = [
     name = "pyrefly check (annotate)",
     args = ["--output-format", "full-text-with-github"],
     stages = ["manual"],
-    additional_dependencies = ["orjson>=3.9"]
+    additional_dependencies = ["orjson>=3.9", "pyperf"]
   }
 ]

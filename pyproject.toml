@@ -60,11 +60,12 @@ ignore = [
   "PT027",
   "ANN401",
 ]
+per-file-ignores."benchmarks/*" = [ "INP001" ]
 per-file-ignores."examples/*" = [ "ANN", "EM", "ERA001", "INP001", "T201", "TRY003" ]
 pydocstyle.convention = "google"
 
 [tool.pyrefly]
-project-includes = [ "src", "tests" ]
+project-includes = [ "src", "tests", "benchmarks" ]
 python-version = "3.11"
 preset = "strict"
 # `typing.override` is 3.12+, setUpClass in tests.
@@ -105,6 +106,19 @@ base_python = [ "3.11" ]
 uv_resolution = "lowest-direct"
 deps = []
 commands = [ [ "python", "-m", "unittest", "discover" ] ]
+
+[tool.tox.env.bench]
+description = "run the benchmark suite"
+deps = [ "pyperf" ]
+# pyperf will not create the directory its `-o` argument points into.
+commands_pre = [ [ "python", "-c", "import pathlib; pathlib.Path('.benchmarks').mkdir(exist_ok=True)" ] ]
+commands = [ [ "python", "benchmarks/bench_server.py", { replace = "posargs", extend = true } ] ]
+
+[tool.tox.env.bench-compare]
+description = "compare two benchmark result files"
+skip_install = true
+deps = [ "pyperf" ]
+commands = [ [ "python", "-m", "pyperf", "compare_to", { replace = "posargs", extend = true } ] ]
 
 [tool.tox.env.prek]
 description = "run pre-commit hooks"

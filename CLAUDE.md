@@ -21,6 +21,8 @@ tox -e prek                            # all hooks, via a tox-managed prek inste
 prek run --all-files                   # every hook over the whole tree
 prek run pyrefly-check --all-files     # type checking alone (strict preset, via [tool.pyrefly]), in the hook's isolated env
 prek run --all-files --hook-stage manual  # what CI runs: report-only ruff, no rewriting
+tox -e bench                           # benchmarks, local only (see below)
+tox -e bench-compare -- a.json b.json  # compare two recorded benchmark runs
 ```
 
 The default env list is tests only (`3.11`–`3.14`, `mindeps`, `coverage`); lint, format, and type checking live in `prek.toml`. `tox -e prek` exists as an *additional* env — not in `env_list`, so a bare `tox` skips it — that runs every hook from a tox-managed env instead of a global `prek`.
@@ -44,7 +46,7 @@ Two further trade-offs: tox silently ignores the `gh` table when the plugin is a
 
 Tests use `unittest`, not pytest. Coverage is enforced at `fail_under = 100`, ruff runs with `select = ["ALL"]`, and type checking is `preset = "strict"` in `[tool.pyrefly]` — so a bare `pyrefly check` from the repo root is already strict. New code must be fully typed and either covered or explicitly marked `# pragma: no cover`.
 
-One thing must be kept in sync by hand: `additional_dependencies` on **both** `pyrefly-check` entries in `prek.toml`, against `dependencies` in `[project]`. The hooks run in isolated envs, so any new runtime dependency must be repeated in both or the strict preset will fail on the unresolvable import. Note that `pyjsonrpc2` itself is *not* installed in those envs — pyrefly resolves the package from `src/` because `project-includes` lists it.
+One thing must be kept in sync by hand: `additional_dependencies` on **both** `pyrefly-check` entries in `prek.toml`. They stand in for two lists — `dependencies` in `[project]` (`orjson`), and whatever the non-`src` paths of `project-includes` import (`pyperf`, for `benchmarks/`). The hooks run in isolated envs, so a new import in either place must be repeated in both entries or the strict preset will fail on the unresolvable module. Note that `pyjsonrpc2` itself is *not* installed in those envs — pyrefly resolves the package from `src/` because `project-includes` lists it.
 
 Type checking was mypy until the switch to pyrefly (for GitHub annotations, see below). Two consequences of the swap are load-bearing:
 
@@ -69,6 +71,68 @@ pyrefly does not read that variable — it takes the flag instead, and needs the
 Hooks without a `stages` key (the builtins) are eligible for every stage and therefore run in both. The builtin fixers still rewrite files in CI, and that is fine: prek fails any hook that modifies a file, and the action passes `--show-diff-on-failure`, so the diff *is* their report.
 
 Gotcha if hook `groups` are ever reintroduced: passing `--group`/`--no-group` without an explicit `--stage` disables the default `pre-commit` stage filter, which would run both variants of each duplicated hook. Pair group selectors with `--stage pre-commit`.
+
+## Benchmarks
+
+`benchmarks/bench_server.py` is a [pyperf](https://pyperf.readthedocs.io) suite over `JsonRpcServer.call()`: one timing per *shape* of request — the happy paths, a notification (no encode step), a batch, a payload large enough for orjson to dominate, and every error path. `invalid-params` is worth its slot because it is the one branch that pays for `inspect.signature().bind()` after the call has already failed; it costs roughly ten times a successful call, so any change to that fallback shows up immediately.
+
+```bash
+tox -e bench                                # every benchmark (a few minutes)
+tox -e bench -- --fast                      # coarser but ~4x quicker, while iterating
+tox -e bench -- -b batch                    # only the names containing "batch"
+tox -e bench -- -o .benchmarks/before.json  # record a baseline
+tox -e bench-compare -- .benchmarks/before.json .benchmarks/after.json
+```
+
+`bench` and `bench-compare` are *additional* envs, like `prek`: absent from `env_list`, so a bare `tox` skips them. `commands_pre` creates `.benchmarks/` because pyperf will not create the directory its `-o` points into; that directory is gitignored.
+
+**Benchmarks are deliberately local-only.** GitHub's hosted runners are shared, unpinned to a physical core, and vary in CPU model between jobs, and `pyperf system tune` has nothing to tune there. The resulting run-to-run spread is wide enough to bury the size of change actually worth measuring, so a CI gate would produce false alarms and mask real regressions rather than catch them. Per-commit tracking would need a dedicated self-hosted machine and a `schedule`/`workflow_dispatch` trigger — not the PR gate. CI does still lint and type-check `benchmarks/`, since `project-includes` and the prek hooks cover the whole tree; it just never runs it.
+
+### Reading the stability warnings
+
+A default run prints `the benchmark result may be unstable / Not enough samples to get a stable result` for most of the suite. That check is **not** a verdict on the numbers. `format_checks()` in pyperf's `_cli.py` warns in two very different situations:
+
+- the standard deviation is ≥10% of the mean — the real alarm, and it does not currently fire for any benchmark here;
+- otherwise, `required_nprocesses()` — the process count that would give 95% confidence in a ±1% measurement — exceeds the 20 processes actually run. That is the message we get, and ±1% is a far finer bar than the decisions it informs.
+
+Measured on `ROG-TOWER` (i9-10850K, 3.14, default settings), stdev as a share of the mean and the processes wanted for ±1%:
+
+| | stdev | wants | | stdev | wants |
+|---|---|---|---|---|---|
+| notification | 1.0% | 14 | parse-error | 2.6% | 60 |
+| positional | 1.5% | 31 | custom-error | 3.2% | 78 |
+| method-not-found | 1.6% | 24 | large-payload | 6.2% | 135 |
+| no-params | 1.7% | 32 | invalid-params | 4.2% | 203 |
+| invalid-request | 2.0% | 32 | batch-10 | 4.0% | 222 |
+| named | 2.8% | 50 | | | |
+
+Precision scales with the square root of the sample count, so 20 processes resolve an effect of roughly `1% × sqrt(wants / 20)` — about 3–4% for the worst entries. **That is the suite's real sensitivity: it detects regressions of ~4% and up.** Raising `processes` to chase the warning away is a bad trade — batch-10 would need ~11× the runtime for a 3× finer bar — and `compare_to` applies its own significance test regardless, so the failure mode is a missed 2% change, never a phantom one. Do not paper over it with `--quiet` either: that also hides the ≥10% stdev warning, which is the one worth reacting to.
+
+What does help is pinning the workers to one core, which removes scheduler migration and core-to-core turbo variation (this CPU is not hybrid, so no P/E-core effect is involved):
+
+```bash
+tox -e bench -- --affinity 2   # any core; avoid 0, which fields more interrupts
+```
+
+For `invalid-params` that moved stdev from 3.2% to 1.6% and `wants` from 81 to 20. It is uneven, though: `batch-10` and `large-payload` barely improved (222 → 192, 135 → 90), because their between-process spread comes from allocation and GC timing rather than core placement. `large-payload` is the least sensitive benchmark in the suite; treat anything under ~8% there as noise.
+
+The trap with pinning is that it also shifts the *mean* — `invalid-params` measured 16.9 µs pinned against 17.4 µs unpinned, a 2.9% systematic difference, which is the same size as the regressions this suite exists to catch. Pin both sides of a comparison or neither.
+
+Finally, the warning's own advice to run `pyperf system tune` is a dead end here: every tuning operation in pyperf's `_system.py` is gated on `OS_LINUX`, so on Windows the command has nothing to tune.
+
+Results are comparable only within one machine, one interpreter, and one set of run settings — and **`compare_to` does not check any of that**. `_compare.py` reads the values and the `tags` metadata, nothing else, so files from different machines, interpreters, or affinity settings are compared without complaint. Guarding the methodology is on us.
+
+Between-session drift is real, and the significance test does not cover it: it models the variance *within* each run, not the gap between two sessions. Re-running `invalid-params` alone at the baseline settings with no code change produced 17.1 µs against the baseline's 16.7 µs — reported as a significant `1.02x slower`. So treat any verdict under ~3% against a stored baseline as unproven, and settle marginal cases by re-recording both sides back-to-back in one session.
+
+That still leaves the day-to-day loop cheap, because only the candidate side has to be measured. `compare_to` accepts a candidate holding a *subset* of the baseline's benchmarks — it compares the intersection and prints `Ignored benchmarks (N)` — so scope the run to what the change touches:
+
+```bash
+tox -e bench -- -b invalid-params --affinity 2 --fast    # ~10 s, catches >10% moves
+tox -e bench -- -b invalid-params --affinity 2 --rigorous -o .benchmarks/candidate.json
+tox -e bench-compare -- .benchmarks/baseline.json .benchmarks/candidate.json
+```
+
+Keep `--affinity 2` on both sides even when iterating with `--fast`: a smaller sample only widens the confidence interval, whereas pinning shifts the mean. The full ~6.5-minute run is needed only when a change touches the shared pipeline (`call`, `_respond`, `_encode`), or to re-record `baseline.json` once it goes stale — after merging anything that moves the numbers, or after an interpreter upgrade.
 
 ## Architecture
 
