@@ -54,6 +54,21 @@ class Handler(JsonRpcServer):
         return object()
 
 
+class UnhashableMethod:  # noqa: PLW1641 - being unhashable is the point
+    """A callable that cannot be used as a dict key.
+
+    Defining `__eq__` without `__hash__` sets `__hash__` to None, which is how
+    this normally arises in the wild -- a value-like command object registered
+    as an RPC method.
+    """
+
+    def __eq__(self, other: object) -> bool:
+        return self is other
+
+    def __call__(self, a: float) -> float:  # pragma: no cover
+        return a
+
+
 class JsonRpcServerTest(unittest.TestCase):
     rpc: Handler
 
@@ -98,6 +113,18 @@ class JsonRpcServerTest(unittest.TestCase):
 
     def test_decorator(self) -> None:
         self.assertRaises(AttributeError, rpc_method, 1)
+
+    def test_error_display(self) -> None:
+        # The display string is built lazily in `__str__` rather than in
+        # `__init__`, because the RPC path only ever serializes `to_dict()`.
+        # `args` consequently holds the three fields, not the formatted message.
+        error = JsonRpcError(code=-32000, message="foobar", data={"foo": "bar"})
+        self.assertEqual(str(error), "[-32000] foobar: {'foo': 'bar'}")
+        self.assertEqual(error.args, (-32000, "foobar", {"foo": "bar"}))
+        # `data=None` is omitted rather than rendered
+        self.assertEqual(
+            str(JsonRpcError(code=-32001, message="barbaz")), "[-32001] barbaz"
+        )
 
     def test_custom_error(self) -> None:
         self.rpc_call(
@@ -435,6 +462,24 @@ class JsonRpcServerTest(unittest.TestCase):
                 "id": 1,
             },
         )
+
+    def test_unhashable_method(self) -> None:
+        # `_signature` memoizes on the callable itself, so one that cannot be a
+        # dict key has to fall back to an uncached lookup. If the resulting
+        # TypeError escaped instead, the second call would still be reported as
+        # invalid params -- but by accident, and any genuine TypeError raised
+        # inside such a method would be mislabelled the same way.
+        rpc = JsonRpcServer(methods={"unhashable": UnhashableMethod()})
+        for _ in range(2):  # Twice: a cache miss must not be memoized either
+            self.rpc_call(
+                '{"jsonrpc": "2.0", "method": "unhashable", "id": 1}',
+                {
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32602, "message": "Invalid params"},
+                    "id": 1,
+                },
+                rpc=rpc,
+            )
 
     def test_raw_request_types(self) -> None:
         request = (

@@ -53,7 +53,7 @@ Type checking was mypy until the switch to pyrefly (for GitHub annotations, see 
 - the strict preset enables `implicit-any` and `unused-ignore`, which mypy's `strict = true` does not fully cover. Empty containers need an explicit annotation (`kwargs: dict[str, Any] = {}`) and lambdas need typed parameters, so prefer a nested `def`;
 - `errors.missing-override-decorator = false` is set because that rule wants `typing.override`, which is 3.12+, and `typing_extensions` is not a dependency. Drop the opt-out if the floor ever rises to 3.12.
 
-The swap also forced `_Outcome` to become a fixed-length tuple, because pyrefly cannot distribute an unpacked union-of-tuples across a call signature — see the request pipeline section below. The only suppression left in `src/` is the pre-existing `# type: ignore[attr-defined]` on `f.__rpc__`, which pyrefly honours. Because `unused-ignore` is on, a stale suppression is a hard error, so suppressions here are verified rather than decorative.
+The swap also forced `_Outcome` to become a fixed-length tuple — see the request pipeline section below. The only suppression left in `src/` is the pre-existing `# type: ignore[attr-defined]` on `f.__rpc__`, which pyrefly honours. Because `unused-ignore` is on, a stale suppression is a hard error, so suppressions here are verified rather than decorative.
 
 Note that ruff formats Python code blocks inside Markdown, so `README.md` is subject to `ruff format`.
 
@@ -74,7 +74,7 @@ Gotcha if hook `groups` are ever reintroduced: passing `--group`/`--no-group` wi
 
 ## Benchmarks
 
-`benchmarks/bench_server.py` is a [pyperf](https://pyperf.readthedocs.io) suite over `JsonRpcServer.call()`: one timing per *shape* of request — the happy paths, a notification (no encode step), a batch, a payload large enough for orjson to dominate, and every error path. `invalid-params` is worth its slot because it is the one branch that pays for `inspect.signature().bind()` after the call has already failed; it costs roughly ten times a successful call, so any change to that fallback shows up immediately.
+`benchmarks/bench_server.py` is a [pyperf](https://pyperf.readthedocs.io) suite over `JsonRpcServer.call()`: one timing per *shape* of request — the happy paths, a notification (no encode step), a batch, a payload large enough for orjson to dominate, and every error path. `invalid-params` is worth its slot because it is the one branch that pays for `inspect.signature().bind()` after the call has already failed; it used to cost roughly ten times a successful call, and still costs ~4x after the signature memoization, so any change to that fallback shows up immediately.
 
 ```bash
 tox -e bench                                # every benchmark (a few minutes)
@@ -132,7 +132,7 @@ tox -e bench -- -b invalid-params --affinity 2 --rigorous -o .benchmarks/candida
 tox -e bench-compare -- .benchmarks/baseline.json .benchmarks/candidate.json
 ```
 
-Keep `--affinity 2` on both sides even when iterating with `--fast`: a smaller sample only widens the confidence interval, whereas pinning shifts the mean. The full ~6.5-minute run is needed only when a change touches the shared pipeline (`call`, `_respond`, `_encode`), or to re-record `baseline.json` once it goes stale — after merging anything that moves the numbers, or after an interpreter upgrade.
+Keep `--affinity 2` on both sides even when iterating with `--fast`: a smaller sample only widens the confidence interval, whereas pinning shifts the mean. The full ~6.5-minute run is needed only when a change touches the shared pipeline (`call`, `_encode`, `_validate_and_execute`), or to re-record `baseline.json` once it goes stale — after merging anything that moves the numbers, or after an interpreter upgrade.
 
 ## Architecture
 
@@ -140,20 +140,27 @@ Everything lives in `src/pyjsonrpc2/server.py`. `src/pyjsonrpc2/__init__.py` re-
 
 ### Request pipeline
 
-`call()` → `_decode_and_parse()` → `_validate_and_execute()` (once per request) → `_respond()` → `_encode()`.
+`call()` holds the whole flow — parse, batch-vs-single, notification filtering — and every path ends in the same two-argument-plus-flag `_encode()`:
 
-- `_decode_and_parse` handles JSON parsing and the batch/single split. Batch elements are validated+executed individually, each serialized immediately, then wrapped in `orjson.Fragment` so the outer `dumps` splices pre-serialized bytes instead of re-encoding them.
-- `_validate_and_execute` returns a **fixed 3-tuple that is splatted into `_respond(obj, id, error)`** — the `_Outcome` alias in the `TYPE_CHECKING` block. Every return site spells out all three:
+- **single request** — `_validate_and_execute()` → unpack → `_encode(obj, id, error)`;
+- **batch** — the same per element, each result wrapped in `orjson.Fragment` so the outer `self._dumps()` splices pre-serialized bytes instead of re-encoding them.
+
+`_encode` is the **sole definition of the response envelope**: it builds `{"jsonrpc", "id", "error"|"result"}` and serializes it. Its defaults (`id=None`, `error=True`) cover the two protocol-level failures — parse error and empty batch — that have no id to answer under and are written as a bare `_encode(payload)`.
+
+This replaced an earlier arrangement with a `_respond()` envelope builder, a single-use `_batch()`, and an `_encode()` that also handled `None`/list/dict via three `@overload`s. The single-request path was inlined into `call()` to skip the `_respond` + `_encode` calls and the `_Outcome` splat, which cost ~8% — at the price of the envelope literal and the `dumps` invocation each living in two places that had to be kept in sync. Folding the envelope into `_encode` and pre-binding the encoder (below) bought that ~8% back by other means, so the duplication is gone and the numbers held: a full rigorous A/B came out at **geomean 1.01x faster**, with `batch-10` 1.06x and `parse-error` 1.06x faster, nothing significant on the hot single-request benchmarks, and the three ≤2% "slower" entries inside the suite's noise floor.
+
+- `self._dumps` is bound **once, in `__init__`** — `partial(dumps, **dumps_kwargs)`, or `orjson.dumps` itself when there are no kwargs, so the common case carries no wrapper. This is what removed the `kwargs = self._dumps_kwargs; dumps(x, **kwargs) if kwargs else dumps(x)` dance that used to be repeated at every call site. The trade-off is that `dumps_kwargs` is now read only at construction; mutating it afterwards has no effect.
+- `_validate_and_execute` returns a **fixed 3-tuple**, the `_Outcome` alias in the `TYPE_CHECKING` block, which `call()` unpacks. Every return site spells out all three:
   - `(error_dict, None, True)` → protocol-level failure before an id could be trusted; the `None` responds with `"id": null`.
   - `(error_dict, id, True)` → failure attributable to a specific request.
-  - `(result, id, False)` → success (the `False` flips `_respond` from the `"error"` key to `"result"`).
+  - `(result, id, False)` → success (the `False` flips `_encode` from the `"error"` key to `"result"`).
 
-  This was originally a union of 1-, 2-, and 3-tuples whose *arity* encoded the outcome, leaning on `_respond`'s defaults to fill the gaps. Only mypy verified that: it expands a union at a call site and checks each member separately ("union math"), whereas pyrefly flattens the union into one unknown-length tuple and assigns the union of every element type to every parameter, which fails. Keep the tuple fixed-length — reintroducing the arity trick would need a per-call-site `# pyrefly: ignore[bad-argument-type]`.
-- `_encode` returns `None` for a falsy response (notification, or a batch that produced no responses), which is how "emit nothing" propagates out of `call()`.
+  This was originally a union of 1-, 2-, and 3-tuples whose *arity* encoded the outcome, leaning on the then-splat target's defaults to fill the gaps. Only mypy verified that: it expands a union at a call site and checks each member separately ("union math"), whereas pyrefly flattens the union into one unknown-length tuple and assigns the union of every element type to every parameter, which fails. Keep the tuple fixed-length.
+- "Emit nothing" is decided in `call()` on both paths: `None` when a single request's id is `_SENTINEL`, and `None` when a batch produced no responses at all. `_encode` itself always returns `bytes`.
 
 ### Notifications
 
-A missing `"id"` key becomes `_SENTINEL` (not `None` — `null` is a *valid* id per spec). `_respond` returns `None` whenever the id is `_SENTINEL`, so notifications are dropped at the point of response construction rather than being special-cased throughout.
+A missing `"id"` key becomes `_SENTINEL` (not `None` — `null` is a *valid* id per spec). `call()` checks for `_SENTINEL` on both paths — returning `None` for a single notification, and skipping the element in the batch loop — so nothing downstream of it has to know about notifications; `_encode` is only ever handed a request that is owed an answer.
 
 ### Method registry
 
@@ -163,9 +170,14 @@ A missing `"id"` key becomes `_SENTINEL` (not `None` — `null` is a *valid* id 
 
 ### Error handling
 
-- `JsonRpcError` is the escape hatch for implementation/application-defined codes; it is caught and serialized verbatim via `to_dict()`.
+- `JsonRpcError` is the escape hatch for implementation/application-defined codes; it is caught and serialized verbatim via `to_dict()`. Its display string is built in `__str__`, **not** in `__init__` — the RPC path only ever calls `to_dict()`, so eagerly formatting `f"[{code}] {message}: {data}"` meant calling `repr()` on the `data` object for a string nobody read. Making it lazy took `custom-error` from 3.02 µs to 2.26 µs (1.34x). The visible consequence is that **`args` holds `(code, message, data)` rather than the formatted message**, which also changes `repr()`; `str()` is unchanged. Anything added to `__init__` later must keep it free of formatting work.
 - Any other exception becomes `-32603 Internal error` with `str(e)` as `data`, logged via `_LOGGER.exception`.
-- `-32602 Invalid params` is detected *after the fact*: a `TypeError` escaping the call is re-checked with `inspect.signature(method).bind(*args, **kwargs)`. If binding also fails, it was an arity/keyword mismatch → invalid params; otherwise the `TypeError` came from inside the method body and is re-raised into the internal-error path. Preserve this ordering when touching the call site.
-- Unserializable return values are caught in `_encode`, which recurses once to emit an internal error for the same id.
+- `-32602 Invalid params` is detected *after the fact*: a `TypeError` escaping the call is re-checked with `self._signature(method).bind(*args, **kwargs)`. If binding also fails, it was an arity/keyword mismatch → invalid params; otherwise the `TypeError` came from inside the method body and is re-raised into the internal-error path. Preserve this ordering when touching the call site.
+- `_signature` memoizes `inspect.signature` in `self._signatures`, keyed on **the callable itself, not the registry name** — so an entry rebound in `_methods` can never be answered with a stale signature. Building the `Signature` is ~3x everything else on that path put together; memoizing it took `invalid-params` from 17.2 µs to 5.8 µs. An unhashable callable (`__eq__` without `__hash__`) makes the cache lookup raise `TypeError`, which *must not* escape — the enclosing handler would read it as a verdict of invalid params — so it is caught and the lookup falls through uncached. `tests.test_server.JsonRpcServerTest.test_unhashable_method` covers that.
+- Unserializable return values are caught in `_encode`, which recurses to emit an internal error for the same id. The recursion is always exactly one deep: the replacement payload is `str(e)` and the id already survived a JSON decode, so the second `dumps` cannot fail.
 
-Standard protocol errors live in the `_Error` enum; `with_data()` clones the entry with a `data` field rather than mutating it.
+Standard protocol errors live in the `_Error` enum. Each member also hangs its payload off a plain `body` attribute set in `__init__`: `.value` resolves through a `DynamicClassAttribute` descriptor on every read, which costs ~100 ns, while `.body` is an ordinary instance attribute holding the same dict. Read `.body` on hot paths; `.value` still works and is the same object. `with_data()` clones the entry with a `data` field rather than mutating it.
+
+### Exact-type checks
+
+`type(x) is dict` / `type(id) not in _ID_TYPES` are used instead of `isinstance` for values that came out of `orjson.loads`, which only ever yields exact `dict`/`list`/`str`/`int`/`float`/`bool`/`None`. This is what makes the `id` check reject `bool` for free, where `isinstance` needs an explicit `isinstance(id, bool)` guard first. The checks are **only** valid for decoded-JSON values — do not copy the idiom to anything a caller supplies directly.

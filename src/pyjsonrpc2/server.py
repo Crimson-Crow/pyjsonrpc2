@@ -5,6 +5,7 @@ __all__ = ["JsonRpcError", "JsonRpcServer", "rpc_method"]
 import inspect
 import logging
 from enum import Enum, auto
+from functools import partial
 from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar, overload
 
 from orjson import Fragment, dumps, loads
@@ -16,29 +17,35 @@ class _Sentinel(Enum):
 
 _LOGGER = logging.getLogger(__name__)
 _SENTINEL = _Sentinel.SENTINEL
-_ID = (str, int, float, type(None))
+_ID_TYPES = frozenset({str, int, float, type(None)})
+_NO_KWARGS: dict[str, Any] = {}
 
 if TYPE_CHECKING:  # pragma: no cover
     from collections.abc import Callable, Sequence
+    from inspect import Signature
 
     F = TypeVar("F", bound=Callable[..., Any])
 
     # A request id, once validated against _ID. `_Sentinel` means "notification".
     _Id: TypeAlias = str | float | None
-    _MaybeId: TypeAlias = _Id | _Sentinel
-
-    # Arguments splatted into _respond(): the payload, the id to answer under,
-    # and whether the payload is an error. An id of None means the failure came
-    # before an id could be trusted, and is answered with "id": null.
-    _Outcome: TypeAlias = tuple[Any, _MaybeId, bool]
 
 
 class JsonRpcError(Exception):
     def __init__(self, code: int, message: str, data: Any = None) -> None:
-        super().__init__(f"[{code}] {message}" + ("" if data is None else f": {data}"))
+        # The display string is built in `__str__`, not here: on the RPC path
+        # this exception is caught and serialized through `to_dict()`, so the
+        # formatting was ~200 ns of pure waste on every application-defined
+        # error. The cost is that `args` holds the three fields rather than the
+        # formatted message.
+        super().__init__(code, message, data)
         self.code = code
         self.message = message
         self.data = data
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message}" + (
+            "" if self.data is None else f": {self.data}"
+        )
 
     def to_dict(self) -> dict[str, Any]:
         to_return: dict[str, Any] = {"code": self.code, "message": self.message}
@@ -54,20 +61,13 @@ class _Error(Enum):
     INVALID_PARAMS = {"code": -32602, "message": "Invalid params"}  # noqa: RUF012
     INTERNAL_ERROR = {"code": -32603, "message": "Internal error"}  # noqa: RUF012
 
+    def __init__(self, body: dict[str, Any]) -> None:
+        # `.value` goes through a `DynamicClassAttribute` descriptor on every
+        # read; a plain instance attribute holding the same object is ~5x cheaper.
+        self.body = body
+
     def with_data(self, data: Any) -> dict[str, Any]:
-        return dict(self.value, data=data)
-
-
-def _respond(
-    obj: Any,
-    id: _MaybeId = None,  # noqa: A002
-    error: bool = True,  # noqa: FBT001 FBT002
-) -> dict[str, Any] | None:
-    return (
-        None
-        if id is _SENTINEL
-        else {"jsonrpc": "2.0", "id": id, "error" if error else "result": obj}
-    )
+        return dict(self.body, data=data)
 
 
 @overload
@@ -100,7 +100,10 @@ class JsonRpcServer:
         dumps_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self._methods = methods or {}
-        self._dumps_kwargs = dumps_kwargs or {}
+        self._dumps: Callable[[Any], bytes] = (
+            partial(dumps, **dumps_kwargs) if dumps_kwargs else dumps
+        )
+        self._signatures: dict[Callable[..., Any], Signature] = {}
         self.add_object(self)
 
     def add_object(self, obj: object, *, prefix: str = "") -> None:
@@ -117,9 +120,21 @@ class JsonRpcServer:
             raise ValueError(msg)
         self._methods[name] = method
 
+    def _signature(self, method: Callable[..., Any]) -> Signature:
+        """Return `inspect.signature(method)`, memoized on the callable itself."""
+        cache = self._signatures
+        try:
+            return cache[method]
+        except KeyError:
+            pass
+        except TypeError:
+            return inspect.signature(method)  # Unhashable callable
+        signature = cache[method] = inspect.signature(method)
+        return signature
+
     # `request` is an arbitrary decoded JSON value, not necessarily an object:
     # the "jsonrpc" lookup below is what rejects the non-object cases.
-    def _validate_and_execute(self, request: Any) -> _Outcome:  # noqa: C901, PLR0911, PLR0912
+    def _validate_and_execute(self, request: Any) -> tuple[Any, _Id | _Sentinel, bool]:  # noqa: C901, PLR0911, PLR0912
         # Validate "jsonrpc" entry
         try:
             if request["jsonrpc"] != "2.0":
@@ -143,8 +158,7 @@ class JsonRpcServer:
 
         # Extract and validate "id" entry
         id = request.get("id", _SENTINEL)  # noqa: A001
-        # `bool` is a subclass of `int` but is not a valid id per spec
-        if id is not _SENTINEL and (isinstance(id, bool) or not isinstance(id, _ID)):
+        if id is not _SENTINEL and type(id) not in _ID_TYPES:
             return (
                 _Error.INVALID_REQUEST.with_data(
                     f"'id' must be a number, string or null (type: {type(id)})"
@@ -169,17 +183,20 @@ class JsonRpcServer:
 
         # Extract and validate "params" entry
         args: Sequence[Any] = ()
-        kwargs: dict[str, Any] = {}
-        if "params" in request:  # LBYL because its absence is not exceptional behavior
-            params = request["params"]
-            if isinstance(params, dict):
+        kwargs: dict[str, Any] = _NO_KWARGS
+        # `.get` with a sentinel rather than `in` + subscript: one lookup, and
+        # the absence of "params" is not exceptional behavior
+        params = request.get("params", _SENTINEL)
+        if params is not _SENTINEL:
+            type_params = type(params)
+            if type_params is dict:
                 kwargs = params
-            elif isinstance(params, list):
+            elif type_params is list:
                 args = params
             else:
                 return (
                     _Error.INVALID_REQUEST.with_data(
-                        f"'params' must be an array or an object (type: {type(params)})"
+                        f"'params' must be an array or an object (type: {type_params})"
                     ),
                     None,
                     True,
@@ -189,17 +206,17 @@ class JsonRpcServer:
         try:
             method = self._methods[method_name]
         except KeyError:
-            return _Error.METHOD_NOT_FOUND.value, id, True
+            return _Error.METHOD_NOT_FOUND.body, id, True
 
         # Call method and handle error
         try:
             try:
-                result = method(*args, **kwargs)
+                result = method(*args, **kwargs) if kwargs else method(*args)
             except JsonRpcError as e:  # Custom error
                 return e.to_dict(), id, True
             except TypeError as e:
                 try:  # Check if it is caused by invalid params
-                    inspect.signature(method).bind(*args, **kwargs)
+                    self._signature(method).bind(*args, **kwargs)
                 except TypeError:
                     return _Error.INVALID_PARAMS.with_data(str(e)), id, True
                 raise
@@ -212,48 +229,44 @@ class JsonRpcServer:
             return _Error.INTERNAL_ERROR.with_data(str(e)), id, True
         return result, id, False
 
-    def _decode_and_parse(
-        self, raw_request: bytes | bytearray | memoryview | str
-    ) -> dict[str, Any] | list[Fragment] | None:
+    def _encode(
+        self,
+        obj: Any,
+        id: _Id = None,  # noqa: A002
+        error: bool = True,  # noqa: FBT001 FBT002
+    ) -> bytes:
+        """Build one response envelope and serialize it.
+
+        Nothing to encode for notifications because callers drop them.
+        """
+        response = {"jsonrpc": "2.0", "id": id, "error" if error else "result": obj}
         try:
-            request = loads(raw_request)
-        except ValueError as e:
-            return _respond(_Error.PARSE_ERROR.with_data(str(e)))
-        if isinstance(request, list):  # Batch request
-            if not request:
-                return _respond(_Error.INVALID_REQUEST.with_data("Empty batch"))
-            return [
-                Fragment(self._encode(response))
-                for r in request
-                if (
-                    response := _respond(*self._validate_and_execute(r))
-                )  # None (notification) check
-            ]
-        return _respond(*self._validate_and_execute(request))
-
-    @overload
-    def _encode(self, response: None) -> None: ...  # pragma: no cover
-
-    @overload
-    def _encode(self, response: list[Fragment]) -> bytes | None: ...  # pragma: no cover
-
-    @overload
-    def _encode(self, response: dict[str, Any]) -> bytes: ...  # pragma: no cover
-
-    def _encode(self, response: dict[str, Any] | list[Fragment] | None) -> bytes | None:
-        if not response:  # Notification or empty list (batch response)
-            return None
-        try:
-            return dumps(response, **self._dumps_kwargs)
+            return self._dumps(response)
         except TypeError as e:
-            if isinstance(response, list):  # pragma: no cover
-                msg = "Should never happen: we are joining fragments of already serialized responses if this is a batch at this point"
-                raise RuntimeError(msg) from e  # noqa: TRY004
-            id = response["id"]  # noqa: A001
+            # Unserializable result: answer the same id with an internal error instead.
+            # Will never recurse more than once because error is serializable.
             _LOGGER.exception("RPC Error [id:%s] Unserializable response", str(id))
-            return self._encode(
-                _respond(_Error.INTERNAL_ERROR.with_data(str(e)), id=id)
-            )
+            return self._encode(_Error.INTERNAL_ERROR.with_data(str(e)), id)
 
     def call(self, request: bytes | bytearray | memoryview | str) -> bytes | None:
-        return self._encode(self._decode_and_parse(request))
+        try:
+            decoded = loads(request)
+        except ValueError as e:
+            return self._encode(_Error.PARSE_ERROR.with_data(str(e)))
+
+        if type(decoded) is list:  # Batch request
+            if not decoded:
+                return self._encode(_Error.INVALID_REQUEST.with_data("Empty batch"))
+            responses: list[Fragment] = []
+            for element in decoded:
+                obj, id, error = self._validate_and_execute(element)  # noqa: A001
+                if id is not _SENTINEL:  # Drop notifications
+                    # Encoded per element and spliced in below as raw bytes,
+                    # rather than re-encoded as part of the assembled list.
+                    responses.append(Fragment(self._encode(obj, id, error)))
+            return self._dumps(responses) if responses else None
+
+        obj, id, error = self._validate_and_execute(decoded)  # noqa: A001
+        if id is _SENTINEL:  # Notification: emit nothing
+            return None
+        return self._encode(obj, id, error)
