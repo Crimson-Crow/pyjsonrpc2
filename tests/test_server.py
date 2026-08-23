@@ -540,6 +540,20 @@ class JsonRpcServerTest(unittest.TestCase):
             rpc=rpc,
         )
 
+    def test_add_method_returns_method(self) -> None:
+        rpc = JsonRpcServer()
+
+        @rpc.add_method
+        def ping() -> str:
+            return "pong"
+
+        self.assertEqual("pong", ping())  # Not rebound to the return value
+        self.rpc_call(
+            '{"jsonrpc": "2.0", "method": "ping", "id": 1}',
+            {"jsonrpc": "2.0", "result": "pong", "id": 1},
+            rpc=rpc,
+        )
+
     def test_add_method_default_name(self) -> None:
         def ping() -> str:
             return "pong"

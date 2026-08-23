@@ -4,7 +4,7 @@ requires = [ "uv-build>=0.12,<0.13" ]
 
 [project]
 name = "pyjsonrpc2"
-version = "1.0.2"
+version = "2.0.0"
 description = "A flexible Python implementation of the JSON-RPC 2.0 protocol."
 readme = "README.md"
 keywords = [ "client", "json", "json-rpc", "jsonrpc", "rpc", "server" ]
