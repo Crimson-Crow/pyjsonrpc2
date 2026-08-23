@@ -25,18 +25,11 @@ if TYPE_CHECKING:  # pragma: no cover
     from inspect import Signature
 
     F = TypeVar("F", bound=Callable[..., Any])
-
-    # A request id, once validated against _ID. `_Sentinel` means "notification".
     _Id: TypeAlias = str | float | None
 
 
 class JsonRpcError(Exception):
     def __init__(self, code: int, message: str, data: Any = None) -> None:
-        # The display string is built in `__str__`, not here: on the RPC path
-        # this exception is caught and serialized through `to_dict()`, so the
-        # formatting was ~200 ns of pure waste on every application-defined
-        # error. The cost is that `args` holds the three fields rather than the
-        # formatted message.
         super().__init__(code, message, data)
         self.code = code
         self.message = message
@@ -44,7 +37,7 @@ class JsonRpcError(Exception):
 
     def __str__(self) -> str:
         return f"[{self.code}] {self.message}" + (
-            "" if self.data is None else f": {self.data}"
+            "" if self.data is None else f": {self.data!r}"
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,8 +55,7 @@ class _Error(Enum):
     INTERNAL_ERROR = {"code": -32603, "message": "Internal error"}  # noqa: RUF012
 
     def __init__(self, body: dict[str, Any]) -> None:
-        # `.value` goes through a `DynamicClassAttribute` descriptor on every
-        # read; a plain instance attribute holding the same object is ~5x cheaper.
+        # `.value` would go through a `DynamicClassAttribute` descriptor on every read
         self.body = body
 
     def with_data(self, data: Any) -> dict[str, Any]:
@@ -116,12 +108,12 @@ class JsonRpcServer:
     ) -> None:
         name = name or getattr(method, "__rpc__", None) or method.__name__
         if name in self._methods:
-            msg = f"Method '{name}' already registered"
+            msg = f"Method {name!r} already registered"
             raise ValueError(msg)
         self._methods[name] = method
 
     def _signature(self, method: Callable[..., Any]) -> Signature:
-        """Return `inspect.signature(method)`, memoized on the callable itself."""
+        """Return `inspect.signature(method)`, memoized on the callable."""
         cache = self._signatures
         try:
             return cache[method]
@@ -140,7 +132,7 @@ class JsonRpcServer:
             if request["jsonrpc"] != "2.0":
                 return (
                     _Error.INVALID_REQUEST.with_data(
-                        f"Wrong rpc version (got '{request['jsonrpc']!s}')"
+                        f"Wrong rpc version (got {request['jsonrpc']!r})"
                     ),
                     None,
                     True,
@@ -172,7 +164,7 @@ class JsonRpcServer:
             method_name = request["method"]
         except KeyError:
             return _Error.INVALID_REQUEST.with_data("Missing 'method' key"), None, True
-        if not isinstance(method_name, str):
+        if type(method_name) is not str:
             return (
                 _Error.INVALID_REQUEST.with_data(
                     f"'method' must be a string (type: {type(method_name)})"
@@ -184,8 +176,6 @@ class JsonRpcServer:
         # Extract and validate "params" entry
         args: Sequence[Any] = ()
         kwargs: dict[str, Any] = _NO_KWARGS
-        # `.get` with a sentinel rather than `in` + subscript: one lookup, and
-        # the absence of "params" is not exceptional behavior
         params = request.get("params", _SENTINEL)
         if params is not _SENTINEL:
             type_params = type(params)
@@ -223,7 +213,7 @@ class JsonRpcServer:
         except Exception as e:
             _LOGGER.exception(
                 "RPC Error [id: %s] [method: '%s'] Uncaught exception",
-                "notification" if id is _SENTINEL else str(id),
+                "notification" if id is _SENTINEL else id,
                 method_name,
             )
             return _Error.INTERNAL_ERROR.with_data(str(e)), id, True
@@ -245,7 +235,7 @@ class JsonRpcServer:
         except TypeError as e:
             # Unserializable result: answer the same id with an internal error instead.
             # Will never recurse more than once because error is serializable.
-            _LOGGER.exception("RPC Error [id:%s] Unserializable response", str(id))
+            _LOGGER.exception("RPC Error [id:%s] Unserializable response", id)
             return self._encode(_Error.INTERNAL_ERROR.with_data(str(e)), id)
 
     def call(self, request: bytes | bytearray | memoryview | str) -> bytes | None:
@@ -260,13 +250,12 @@ class JsonRpcServer:
             responses: list[Fragment] = []
             for element in decoded:
                 obj, id, error = self._validate_and_execute(element)  # noqa: A001
-                if id is not _SENTINEL:  # Drop notifications
-                    # Encoded per element and spliced in below as raw bytes,
-                    # rather than re-encoded as part of the assembled list.
+                if id is not _SENTINEL:  # Notification
+                    # Encoded per element then spliced
                     responses.append(Fragment(self._encode(obj, id, error)))
             return self._dumps(responses) if responses else None
 
         obj, id, error = self._validate_and_execute(decoded)  # noqa: A001
-        if id is _SENTINEL:  # Notification: emit nothing
+        if id is _SENTINEL:  # Notification
             return None
         return self._encode(obj, id, error)

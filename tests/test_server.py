@@ -121,6 +121,12 @@ class JsonRpcServerTest(unittest.TestCase):
         error = JsonRpcError(code=-32000, message="foobar", data={"foo": "bar"})
         self.assertEqual(str(error), "[-32000] foobar: {'foo': 'bar'}")
         self.assertEqual(error.args, (-32000, "foobar", {"foo": "bar"}))
+        # `data` is rendered with `!r`, so a string stays distinguishable from
+        # whatever else could have produced the same `str()`.
+        self.assertEqual(
+            str(JsonRpcError(code=-32002, message="qux", data="boom")),
+            "[-32002] qux: 'boom'",
+        )
         # `data=None` is omitted rather than rendered
         self.assertEqual(
             str(JsonRpcError(code=-32001, message="barbaz")), "[-32001] barbaz"
@@ -229,6 +235,9 @@ class JsonRpcServerTest(unittest.TestCase):
             ('{"method": "test"}', "Missing 'jsonrpc' key"),
             ('{"jsonrpc": "2.0", "params": [1, 2, 3]}', "Missing 'method' key"),
             ('{"jsonrpc": "1.0", "method": "test"}', "Wrong rpc version (got '1.0')"),
+            # A number reports without quotes, where `!s` would have rendered it
+            # identically to the string above.
+            ('{"jsonrpc": 1.0, "method": "test"}', "Wrong rpc version (got 1.0)"),
             (
                 '{"jsonrpc": "2.0", "method": 123}',
                 "'method' must be a string (type: <class 'int'>)",
