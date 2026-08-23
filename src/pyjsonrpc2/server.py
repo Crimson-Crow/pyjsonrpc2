@@ -1,7 +1,7 @@
 """Server-side implementation of the JSON-RPC 2.0 protocol.
 
-This module is transport-agnostic: `JsonRpcServer.call()` takes a raw request
-and returns the raw bytes of the response.
+This module is transport-agnostic: `JsonRpcServer.call()` takes a raw request and
+returns the raw bytes of the response.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ _ID_TYPES = frozenset({str, int, float, type(None)})
 _NO_KWARGS: dict[str, Any] = {}
 
 if TYPE_CHECKING:  # pragma: no cover
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from inspect import Signature
 
     F = TypeVar("F", bound=Callable[..., Any])
@@ -37,13 +37,12 @@ if TYPE_CHECKING:  # pragma: no cover
 class JsonRpcError(Exception):
     """Error whose details are sent to the client as-is.
 
-    Raise it from a registered method to answer with a specific code, message
-    and data, instead of the generic internal error that any other exception
-    produces.
+    Raise it from a registered method to answer with a specific code, message and data,
+    instead of the generic internal error that any other exception produces.
 
-    The specification reserves the codes from -32768 to -32000, of which -32099
-    to -32000 are set aside for implementation-defined server errors; any code
-    outside the reserved range is free for application use.
+    The specification reserves the codes from -32768 to -32000, of which -32099 to
+    -32000 are set aside for implementation-defined server errors; any code outside the
+    reserved range is free for application use.
 
     Attributes:
         code: The error code.
@@ -74,8 +73,7 @@ class JsonRpcError(Exception):
         """Return the error as a JSON-RPC error object.
 
         Returns:
-            A dict holding `"code"` and `"message"`, plus `"data"` if it is not
-            `None`.
+            A dict holding `"code"` and `"message"`, plus `"data"` if it is not `None`.
         """
         to_return: dict[str, Any] = {"code": self.code, "message": self.message}
         if self.data is not None:
@@ -111,17 +109,17 @@ def rpc_method(
 ) -> Callable[[F], F] | F:
     """Mark a function as an RPC method.
 
-    Usable bare (`@rpc_method`) or called (`@rpc_method(name="cube")`). Marked
-    methods are registered automatically when a `JsonRpcServer` subclass is
-    instantiated, or when an object holding them is passed to
-    `JsonRpcServer.add_object()`. A marked plain function still has to be
-    handed to `JsonRpcServer.add_method()`; the marker only supplies its name.
+    Usable bare (`@rpc_method`) or called (`@rpc_method(name="cube")`). Marked methods
+    are registered automatically when a `JsonRpcServer` subclass is instantiated, or
+    when an object holding them is passed to `JsonRpcServer.add_object()`. A marked
+    plain function still has to be handed to `JsonRpcServer.add_method()`; the marker
+    only supplies its name.
 
     Args:
-        _func: The function to mark. Supplied by Python when the decorator is
-            used bare; do not pass it explicitly.
-        name: The name clients use to call the method. Defaults to the name of
-            the function itself.
+        _func: The function to mark. Supplied by Python when the decorator is used bare;
+            do not pass it explicitly.
+        name: The name clients use to call the method. Defaults to the name of the
+            function itself.
 
     Returns:
         The function, unchanged except for the marker attribute.
@@ -154,13 +152,13 @@ def rpc_method(
 class JsonRpcServer:
     """A JSON-RPC 2.0 server dispatching requests to the methods registered on it.
 
-    The server performs no I/O of its own: hand raw requests to `call()` and
-    send back the bytes it returns, over whatever transport you like.
+    The server performs no I/O of its own: hand raw requests to `call()` and send back
+    the bytes it returns, over whatever transport you like.
 
-    Methods can be registered in four ways: by passing a mapping to the
-    constructor, by decorating the methods of a subclass with `rpc_method`, by
-    calling `add_method()` for a single callable, or by calling `add_object()`
-    for every marked method of an object.
+    Methods can be registered in four ways: by passing a mapping to the constructor, by
+    decorating the methods of a subclass with `rpc_method`, by calling `add_method()`
+    for a single callable, or by calling `add_object()` for every marked method of an
+    object.
 
     Example:
         >>> class MathServer(JsonRpcServer):
@@ -175,21 +173,21 @@ class JsonRpcServer:
 
     def __init__(
         self,
-        methods: dict[str, Callable[..., Any]] | None = None,
+        methods: Mapping[str, Callable[..., Any]] | None = None,
         *,
         dumps_kwargs: dict[str, Any] | None = None,
     ) -> None:
         """Create a server and register its own `rpc_method`-marked methods.
 
         Args:
-            methods: Mapping of RPC method names to callables to register. It
-                is used as-is rather than copied, so later registrations show
-                up in the dict that was passed.
+            methods: Mapping of RPC method names to callables to register. It is copied.
+                This path does not consult `__rpc__`.
             dumps_kwargs: Extra keyword arguments for `orjson.dumps()`, such as
-                `{"option": orjson.OPT_INDENT_2}`. Only read here, at
-                construction time.
+                `{"option": orjson.OPT_INDENT_2}`. Only read at construction time.
         """
-        self._methods = methods or {}
+        self._methods: dict[str, Callable[..., Any]] = (
+            {} if methods is None else dict(methods)
+        )
         self._dumps: Callable[[Any], bytes] = (
             partial(dumps, **dumps_kwargs) if dumps_kwargs else dumps
         )
@@ -201,8 +199,8 @@ class JsonRpcServer:
 
         Args:
             obj: The object to scan. Anything else it holds is ignored.
-            prefix: String prepended to every name registered from this object,
-                which keeps two objects exposing the same method names apart.
+            prefix: String prepended to every name registered from this object, which
+                keeps two objects exposing the same method names apart.
 
         Raises:
             ValueError: If one of the resulting names is already registered.
@@ -221,11 +219,11 @@ class JsonRpcServer:
                 return a + b
 
         Args:
-            method: The callable to register. It is called with the `"params"`
-                of a request: an array becomes positional arguments, an object
-                becomes keyword arguments.
-            name: The name clients use to call it. Defaults to the name given
-                to `rpc_method`, and then to the callable's own name.
+            method: The callable to register. It is called with the `"params"` of a
+                request: an array becomes positional arguments, an object becomes
+                keyword arguments.
+            name: The name clients use to call it. Defaults to the name given to
+                `rpc_method`, and then to the callable's own name.
 
         Returns:
             The callable that was passed in, unchanged.
@@ -256,15 +254,14 @@ class JsonRpcServer:
         """Validate one request and run the method it names.
 
         Args:
-            request: An arbitrary decoded JSON value, not necessarily an
-                object: the `"jsonrpc"` lookup below is what rejects the
-                non-object cases.
+            request: An arbitrary decoded JSON value, not necessarily an object: the
+                `"jsonrpc"` lookup below is what rejects the non-object cases.
 
         Returns:
-            An `(obj, id, error)` triple: the payload to answer with, the id it
-            is owed to (`None` when the request was too broken for one to be
-            trusted, `_SENTINEL` for a notification), and whether `obj` is an
-            error object rather than a result.
+            An `(obj, id, error)` tuple: the payload to answer with, the id it is owed
+            to (`None` when the request was too broken for one to be trusted,
+            `_SENTINEL` for a notification), and whether `obj` is an error object rather
+            than a result.
         """
         # Validate "jsonrpc" entry
         try:
@@ -388,8 +385,8 @@ class JsonRpcServer:
             request: The request, as JSON text or as its UTF-8 encoding.
 
         Returns:
-            The encoded response, or `None` when the client is owed no answer,
-            i.e. for a single notification or for a batch of only notifications.
+            The encoded response, or `None` when the client is owed no answer, i.e. for
+            a single notification or for a batch of only notifications.
         """
         try:
             decoded = loads(request)

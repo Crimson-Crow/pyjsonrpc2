@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import MappingProxyType
 from typing import Any, NoReturn
 
 from pyjsonrpc2.server import JsonRpcError, JsonRpcServer, rpc_method
@@ -54,12 +55,10 @@ class Handler(JsonRpcServer):
         return object()
 
 
-class UnhashableMethod:  # noqa: PLW1641 - being unhashable is the point
+class UnhashableMethod:  # noqa: PLW1641
     """A callable that cannot be used as a dict key.
 
-    Defining `__eq__` without `__hash__` sets `__hash__` to None, which is how
-    this normally arises in the wild -- a value-like command object registered
-    as an RPC method.
+    Defining `__eq__` without `__hash__` sets `__hash__` to None.
     """
 
     def __eq__(self, other: object) -> bool:
@@ -477,7 +476,7 @@ class JsonRpcServerTest(unittest.TestCase):
         # dict key has to fall back to an uncached lookup. If the resulting
         # TypeError escaped instead, the second call would still be reported as
         # invalid params -- but by accident, and any genuine TypeError raised
-        # inside such a method would be mislabelled the same way.
+        # inside such a method would be mislabeled the same way.
         rpc = JsonRpcServer(methods={"unhashable": UnhashableMethod()})
         for _ in range(2):  # Twice: a cache miss must not be memoized either
             self.rpc_call(
@@ -508,6 +507,35 @@ class JsonRpcServerTest(unittest.TestCase):
         self.rpc_call(
             '{"jsonrpc": "2.0", "method": "multiply", "params": [6, 7], "id": 1}',
             {"jsonrpc": "2.0", "result": 42, "id": 1},
+        )
+
+    def test_constructor_methods_are_copied(self) -> None:
+        def multiply(a: float, b: float) -> float:
+            return a * b
+
+        methods = {"multiply": multiply}
+        rpc = Handler(methods=methods)
+        # Neither the subclass's own marked methods, registered by `__init__`,
+        # nor a later registration reach the mapping that was passed.
+        rpc.add_method(multiply, name="times")
+        self.assertEqual({"multiply": multiply}, methods)
+        # ...and the server keeps what it was given once the caller drops it.
+        methods.clear()
+        self.rpc_call(
+            '{"jsonrpc": "2.0", "method": "multiply", "params": [6, 7], "id": 1}',
+            {"jsonrpc": "2.0", "result": 42, "id": 1},
+            rpc=rpc,
+        )
+
+    def test_constructor_accepts_any_mapping(self) -> None:
+        def multiply(a: float, b: float) -> float:
+            return a * b
+
+        rpc = JsonRpcServer(MappingProxyType({"multiply": multiply}))
+        self.rpc_call(
+            '{"jsonrpc": "2.0", "method": "multiply", "params": [6, 7], "id": 1}',
+            {"jsonrpc": "2.0", "result": 42, "id": 1},
+            rpc=rpc,
         )
 
     def test_dumps_kwargs(self) -> None:
