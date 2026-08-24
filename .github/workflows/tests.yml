@@ -4,13 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
@@ -18,7 +19,7 @@ jobs:
     env:
       RUFF_OUTPUT_FORMAT: github
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: j178/prek-action@v3.0.0
         with:
           extra-args: --all-files --hook-stage manual
@@ -30,7 +31,7 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.0.1
       - run: uv tool install tox --with tox-uv --with tox-gh
       - run: tox
@@ -48,7 +49,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.0.1
       - run: uv tool install tox --with tox-uv
       - uses: actions/download-artifact@v8.0.1

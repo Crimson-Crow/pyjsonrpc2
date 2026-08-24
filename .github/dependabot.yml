@@ -1,0 +1,14 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: / # Covers every workflow under .github/workflows
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7 # Actions are executable code; don't take a tag hours old
+    groups:
+      actions:
+        patterns: ["*"] # One PR, and tests.yml/publish.yml stay in lockstep
+    commit-message:
+      prefix: ci
