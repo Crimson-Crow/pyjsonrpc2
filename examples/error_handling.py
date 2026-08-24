@@ -39,18 +39,18 @@ server = AdvancedMathServer()
 
 # Usage examples
 print(server.call('{"jsonrpc": "2.0", "method": "divide", "params": [10, 2], "id": 5}'))
-# Output: {"jsonrpc": "2.0", "result": 5.0, "id": 5}
+# Output: b'{"jsonrpc":"2.0","id":5,"result":5.0}'
 
 print(server.call('{"jsonrpc": "2.0", "method": "divide", "params": [10, 0], "id": 6}'))
-# Output: {"jsonrpc": "2.0", "error": {"code": -32000, "message": "Division by zero", "data": {"numerator": 10, "denominator": 0}}, "id": 6}
+# Output: b'{"jsonrpc":"2.0","id":6,"error":{"code":-32000,"message":"Division by zero","data":{"numerator":10,"denominator":0}}}'
 
 print(server.call('{"jsonrpc": "2.0", "method": "factorial", "params": [5], "id": 7}'))
-# Output: {"jsonrpc": "2.0", "result": 120, "id": 7}
+# Output: b'{"jsonrpc":"2.0","id":7,"result":120}'
 
 print(server.call('{"jsonrpc": "2.0", "method": "factorial", "params": [-3], "id": 8}'))
-# Output: {"jsonrpc": "2.0", "error": {"code": -32001, "message": "Invalid input for factorial", "data": {"input": -3, "reason": "Must be a non-negative integer"}}, "id": 8}
+# Output: b'{"jsonrpc":"2.0","id":8,"error":{"code":-32001,"message":"Invalid input for factorial","data":{"input":-3,"reason":"Must be non-negative"}}}'
 
 print(
     server.call('{"jsonrpc": "2.0", "method": "factorial", "params": ["foo"], "id": 9}')
 )  # TypeError will be logged
-# Output: {"jsonrpc": "2.0", "error": {"code": -32603, "message": "Internal error", "data": "n must be an integer"}, "id": 9}
+# Output: b'{"jsonrpc":"2.0","id":9,"error":{"code":-32603,"message":"Internal error","data":"n must be an integer"}}'

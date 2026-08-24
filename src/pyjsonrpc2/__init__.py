@@ -1,4 +1,4 @@
-"""A flexible Python implementation of the JSON-RPC 2.0 protocol."""
+"""A correct, transport-agnostic Python implementation of the JSON-RPC 2.0 protocol."""
 
 __all__ = ["__version__", "server"]
 

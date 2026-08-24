@@ -78,12 +78,12 @@ except ValueError as e:
 
 # A few example calls
 result = server.call('{"jsonrpc": "2.0", "method": "add", "params": [5, 3], "id": 1}')
-print(result)  # Output: {"jsonrpc": "2.0", "result": 8, "id": 1}
+print(result)  # Output: b'{"jsonrpc":"2.0","id":1,"result":8}'
 result = server.call(
     b'{"jsonrpc": "2.0", "method": "subtract", "params": [5, 3], "id": 2}'
 )
-print(result)  # Output: {"jsonrpc": "2.0", "result": 2, "id": 2}
+print(result)  # Output: b'{"jsonrpc":"2.0","id":2,"result":2}'
 result = server.call(
     '{"jsonrpc": "2.0", "method": "multiply", "params": [5, 3], "id": 3}'
 )
-print(result)  # Output: {"jsonrpc": "2.0", "result": 15, "id": 3}
+print(result)  # Output: b'{"jsonrpc":"2.0","id":3,"result":15}'

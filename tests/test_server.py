@@ -213,12 +213,9 @@ class JsonRpcServerTest(unittest.TestCase):
         )
 
     def assert_invalid_request(self, request: str, data: str) -> None:
-        """Assert `request` is rejected for the reason described by `data`.
-
-        The `data` field is what distinguishes the rejection reasons from one
-        another, so it is asserted rather than stripped: without it every case
-        below would still pass if it failed for the wrong reason.
-        """
+        # The `data` field is what distinguishes the rejection reasons from one another,
+        # so it is asserted rather than stripped: without it every case below would
+        # still pass if it failed for the wrong reason.
         self.rpc_call(
             request,
             {
