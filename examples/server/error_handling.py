@@ -7,8 +7,8 @@ class AdvancedMathServer(JsonRpcServer):
     @rpc_method
     def divide(self, a, b):
         if b == 0:
-            # JsonRpcError can be used to send custom implementation-defined server-errors.
-            # Ensure that the provided arguments are json serializable types.
+            # Raise JsonRpcError to send a custom implementation-defined server
+            # error. Give it arguments of JSON serializable types only.
             raise JsonRpcError(
                 code=-32000,
                 message="Division by zero",
@@ -19,8 +19,9 @@ class AdvancedMathServer(JsonRpcServer):
     @rpc_method
     def factorial(self, n):
         if not isinstance(n, int):
-            # Any exception (other than a JsonRpcError) raised during a rpc call will be caught and logged.
-            # Then, an Internal error response will be returned, with the "data" field containing a string representation of the caught exception.
+            # The server catches and logs any exception that is not a JsonRpcError.
+            # It then answers with an Internal error response. The "data" field of
+            # that response holds the string form of the exception.
             raise TypeError("n must be an integer")
         if n < 0:
             raise JsonRpcError(
@@ -52,5 +53,5 @@ print(server.call('{"jsonrpc": "2.0", "method": "factorial", "params": [-3], "id
 
 print(
     server.call('{"jsonrpc": "2.0", "method": "factorial", "params": ["foo"], "id": 9}')
-)  # TypeError will be logged
+)  # The server logs the TypeError
 # Output: b'{"jsonrpc":"2.0","id":9,"error":{"code":-32603,"message":"Internal error","data":"n must be an integer"}}'

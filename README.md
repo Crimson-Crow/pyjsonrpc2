@@ -6,11 +6,13 @@
 [![GitHub](https://img.shields.io/github/license/Crimson-Crow/pyjsonrpc2)](https://github.com/Crimson-Crow/pyjsonrpc2/blob/main/LICENSE.txt)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/creating-a-pull-request)
 
-A correct, transport-agnostic Python implementation of the JSON-RPC 2.0 protocol (currently server-side only).
+A correct, transport-agnostic Python implementation of the JSON-RPC 2.0 protocol.
 
 ## Key features
+- Both halves of the protocol: `JsonRpcServer` and `JsonRpcClient`
 - Full compliance with the [JSON-RPC 2.0 specification](https://www.jsonrpc.org/specification), batch requests and notifications included
-- Transport-agnostic: hand `call()` a raw request, send back the raw bytes it returns
+- Transport-agnostic: hand `call()` a raw request and send back the raw bytes it returns; the client hands you the raw bytes of a request and a `concurrent.futures.Future` to read its answer from
+- Responses are matched to requests by `id`, so a transport may answer out of order, from another thread, or not at all
 - Accepts `str`, `bytes`, `bytearray` and `memoryview` input
 - Multiple method registration patterns (constructor mapping, class-based, individual methods, lambda, etc.)
 - Automatic & custom error handling capabilities
@@ -30,7 +32,11 @@ pip install pyjsonrpc2
 
 ## Usage
 
+The two halves never meet. `JsonRpcServer` turns the raw bytes of a request into the raw bytes of a response; `JsonRpcClient` turns a method call into the raw bytes of a request plus the `Future` its answer will arrive in. Neither performs any I/O of its own — carrying the bytes between them is your job.
+
 For more info, check the [examples/](examples/) directory.
+
+## Server
 
 ### Basic Server Creation
 
@@ -43,7 +49,7 @@ server = JsonRpcServer()
 
 ### Method Registration Patterns
 
-These are the main patterns for registering RPC methods. [examples/registering_methods.py](examples/registering_methods.py) contains a few more.
+These are the main patterns for registering RPC methods. [examples/server/registering_methods.py](examples/server/registering_methods.py) contains a few more.
 1. Passing a mapping of names to callables to the constructor:
 ```python
 server = JsonRpcServer({"get_version": lambda: "1.0"})
@@ -169,6 +175,104 @@ Extra keyword arguments for `orjson.dumps()` can be supplied through `dumps_kwar
 import orjson
 
 server = JsonRpcServer(dumps_kwargs={"option": orjson.OPT_INDENT_2})
+```
+
+## Client
+
+### Making calls
+
+`request()` returns a pair: the bytes to send, and the `Future` its answer will be delivered to. Nothing is settled until a response is fed back to `handle()`, which matches it to its request by `id`.
+
+```python
+from pyjsonrpc2.client import JsonRpcClient
+
+client = JsonRpcClient()
+
+request, future = client.request("subtract", 42, 23)
+# request: b'{"jsonrpc":"2.0","method":"subtract","params":[42,23],"id":1}'
+
+transport.send(request)  # a socket, an HTTP request, a pipe... whatever you use
+client.handle(transport.recv())
+future.result()  # 19
+```
+
+Parameters are either positional or named, exactly as in the protocol: `*args` becomes the `"params"` array, `**kwargs` becomes the `"params"` object, and asking for both raises `ValueError`. The method name is positional-only, so a parameter that happens to be called `method` still lands in `"params"`.
+
+```python
+client.request("subtract", minuend=42, subtrahend=23)
+client.request("subtract", 42, subtrahend=23)  # ValueError
+```
+
+### Notifications
+
+A notification carries no `id`, so the server owes nothing back and there is no future to hand out — not even a failure can be reported against it.
+
+```python
+client.notify("log", "hello")
+# b'{"jsonrpc":"2.0","method":"log","params":["hello"]}'
+```
+
+### Batch requests
+
+A batch accumulates calls and encodes them as one payload. Requests hand back their own future, notifications hand back nothing, and one payload back settles all of them at once.
+
+```python
+batch = client.batch()
+total = batch.request("sum", 1, 2, 4)
+batch.notify("log", "part of the batch")
+difference = batch.request("subtract", 42, 23)
+
+transport.send(batch.encode())
+client.handle(transport.recv())
+
+total.result()  # 7
+difference.result()  # 19
+```
+
+Encoding does not close a batch: more calls can be added and the batch encoded again. An empty one is refused with `ValueError`, since the specification has no answer for it.
+
+### Handling responses
+
+`handle()` accepts single responses and batches, as JSON text or its UTF-8 encoding, in any order and from any thread. Its return value is the errors it could **not** attribute to a pending request — usually empty:
+
+```python
+unattributed = client.handle(response)
+```
+
+A server that cannot parse what it was sent has no `id` to answer under, so it replies with a null one. Nothing can be matched against that, and guessing would fail the wrong call, so those errors are handed back to the caller instead. Responses that match nothing else — a late answer, a duplicate, an `id` never sent — are logged on the `pyjsonrpc2.client` logger at the `WARNING` level.
+
+### Error handling
+
+- An `"error"` response raises `JsonRpcError` out of `Future.result()`, carrying the server's `code`, `message` and `data`. It is the same class the server raises, so the two sides never have to translate anything
+- A response that is not a JSON-RPC response — wrong version, both `"result"` and `"error"`, neither of them — fails the future it matches with `InvalidResponseError`, so whoever waits on that call is the one who hears about it
+- A payload that is unusable as a whole — not valid JSON, not an object or an array, an empty array — is raised out of `handle()` itself, and nothing in it is settled
+
+```python
+from pyjsonrpc2.client import InvalidResponseError, JsonRpcError
+
+try:
+    future.result()
+except JsonRpcError as e:
+    print(e.code, e.message, e.data)
+except InvalidResponseError as e:
+    print("the server answered with something that is not JSON-RPC:", e)
+```
+
+A request counts as outstanding from the moment it is built, whether or not it ever reaches a transport. When a transport dies there is nobody left to answer the calls in flight, so release them rather than leaving their futures pending forever:
+
+```python
+client.cancel_pending(ConnectionError("the socket went away"))  # returns how many
+client.cancel_pending()  # cancels them instead: result() raises CancelledError
+```
+
+### Client configuration
+
+Both arguments are keyword-only. `dumps_kwargs` works as it does on the server, and `id_iterator` replaces the source of request ids (`itertools.count(1)` by default) for servers that are particular about their type. It must yield values that are unique for the lifetime of the client and never `None`.
+
+```python
+import itertools
+
+client = JsonRpcClient(id_iterator=(f"call-{n}" for n in itertools.count()))
 ```
 
 ## Tests

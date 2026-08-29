@@ -56,9 +56,9 @@ class Handler(JsonRpcServer):
 
 
 class UnhashableMethod:  # noqa: PLW1641
-    """A callable that cannot be used as a dict key.
+    """A callable that cannot be a dict key.
 
-    Defining `__eq__` without `__hash__` sets `__hash__` to None.
+    A class that defines `__eq__` without `__hash__` gets a `__hash__` of `None`.
     """
 
     def __eq__(self, other: object) -> bool:
@@ -114,19 +114,19 @@ class JsonRpcServerTest(unittest.TestCase):
         self.assertRaises(AttributeError, rpc_method, 1)
 
     def test_error_display(self) -> None:
-        # The display string is built lazily in `__str__` rather than in
-        # `__init__`, because the RPC path only ever serializes `to_dict()`.
-        # `args` consequently holds the three fields, not the formatted message.
+        # `__str__` builds the display string, not `__init__`, because the RPC path
+        # only serializes `to_dict()`. `args` therefore holds the three fields, not
+        # the formatted message.
         error = JsonRpcError(code=-32000, message="foobar", data={"foo": "bar"})
         self.assertEqual(str(error), "[-32000] foobar: {'foo': 'bar'}")
         self.assertEqual(error.args, (-32000, "foobar", {"foo": "bar"}))
-        # `data` is rendered with `!r`, so a string stays distinguishable from
-        # whatever else could have produced the same `str()`.
+        # `__str__` renders `data` with `!r`, so a string stays different from the
+        # other values that could give the same `str()`.
         self.assertEqual(
             str(JsonRpcError(code=-32002, message="qux", data="boom")),
             "[-32002] qux: 'boom'",
         )
-        # `data=None` is omitted rather than rendered
+        # `__str__` leaves out `data` when it is `None`
         self.assertEqual(
             str(JsonRpcError(code=-32001, message="barbaz")), "[-32001] barbaz"
         )
@@ -143,7 +143,7 @@ class JsonRpcServerTest(unittest.TestCase):
         )
 
     def test_custom_error_without_data(self) -> None:
-        # `data` is optional and must be omitted entirely when unset
+        # `data` is optional. The response must leave it out completely when unset.
         self.rpc_call(
             '{"jsonrpc": "2.0", "method": "custom_error_without_data", "id": 1}',
             {
@@ -186,7 +186,7 @@ class JsonRpcServerTest(unittest.TestCase):
         self.assertIsNone(self.rpc.call('{"jsonrpc": "2.0", "method": "foobar"}'))
 
     def test_notification_raises(self) -> None:
-        # A failing notification is still silent, but must be logged
+        # A notification that fails is still silent, but the server must log it
         with self.assertLogs(_LOGGER_NAME, "ERROR"):
             self.assertIsNone(
                 self.rpc.call('{"jsonrpc": "2.0", "method": "raises_typeerror"}'),
@@ -213,9 +213,9 @@ class JsonRpcServerTest(unittest.TestCase):
         )
 
     def assert_invalid_request(self, request: str, data: str) -> None:
-        # The `data` field is what distinguishes the rejection reasons from one another,
-        # so it is asserted rather than stripped: without it every case below would
-        # still pass if it failed for the wrong reason.
+        # The `data` field is what separates the rejection reasons, so this method
+        # asserts it instead of removing it. Without it, every case below could still
+        # pass after it failed for the wrong reason.
         self.rpc_call(
             request,
             {
@@ -231,8 +231,8 @@ class JsonRpcServerTest(unittest.TestCase):
             ('{"method": "test"}', "Missing 'jsonrpc' key"),
             ('{"jsonrpc": "2.0", "params": [1, 2, 3]}', "Missing 'method' key"),
             ('{"jsonrpc": "1.0", "method": "test"}', "Wrong rpc version (got '1.0')"),
-            # A number reports without quotes, where `!s` would have rendered it
-            # identically to the string above.
+            # A number appears without quotes. `!s` would have rendered it exactly
+            # like the string above.
             ('{"jsonrpc": 1.0, "method": "test"}', "Wrong rpc version (got 1.0)"),
             (
                 '{"jsonrpc": "2.0", "method": 123}',
@@ -265,7 +265,7 @@ class JsonRpcServerTest(unittest.TestCase):
                 )
 
     def test_invalid_id(self) -> None:
-        # `bool` is a subclass of `int` but is not a valid id per spec
+        # `bool` is a subclass of `int`, but the spec does not allow it as an id
         for raw_id, type_name in (
             ("true", "bool"),
             ("false", "bool"),
@@ -280,8 +280,8 @@ class JsonRpcServerTest(unittest.TestCase):
                 )
 
     def test_extra_members(self) -> None:
-        # The spec neither forbids nor assigns meaning to undefined members,
-        # so they must be ignored rather than rejected
+        # The spec does not forbid undefined members and gives them no meaning, so
+        # the server must ignore them instead of rejecting them
         self.rpc_call(
             '{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1, "extra": "ignored"}',
             {"jsonrpc": "2.0", "result": 19, "id": 1},
@@ -294,15 +294,15 @@ class JsonRpcServerTest(unittest.TestCase):
         )
 
     def test_fractional_id(self) -> None:
-        # Clients SHOULD NOT send fractional ids, but that is not the server's
-        # call to enforce: it must echo back whatever id it was given
+        # Clients SHOULD NOT send fractional ids, but the server does not enforce
+        # that rule. It must return the same id that it received.
         self.rpc_call(
             '{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1.5}',
             {"jsonrpc": "2.0", "result": 19, "id": 1.5},
         )
 
     def test_null_id(self) -> None:
-        # `null` is a valid id: it must not be mistaken for a notification
+        # `null` is a valid id. The server must not read it as a notification.
         self.rpc_call(
             '{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": null}',
             {"jsonrpc": "2.0", "result": 19, "id": None},
@@ -469,13 +469,12 @@ class JsonRpcServerTest(unittest.TestCase):
         )
 
     def test_unhashable_method(self) -> None:
-        # `_signature` memoizes on the callable itself, so one that cannot be a
-        # dict key has to fall back to an uncached lookup. If the resulting
-        # TypeError escaped instead, the second call would still be reported as
-        # invalid params -- but by accident, and any genuine TypeError raised
-        # inside such a method would be mislabeled the same way.
+        # `_signature` memoizes on the callable itself, so a callable that cannot
+        # be a dict key needs an uncached lookup. If the `TypeError` escaped instead,
+        # the second call would still report invalid params, but only by accident. A
+        # real `TypeError` from inside such a method would get the same wrong label.
         rpc = JsonRpcServer(methods={"unhashable": UnhashableMethod()})
-        for _ in range(2):  # Twice: a cache miss must not be memoized either
+        for _ in range(2):  # Twice, because the cache must not keep a miss either
             self.rpc_call(
                 '{"jsonrpc": "2.0", "method": "unhashable", "id": 1}',
                 {
@@ -512,11 +511,11 @@ class JsonRpcServerTest(unittest.TestCase):
 
         methods = {"multiply": multiply}
         rpc = Handler(methods=methods)
-        # Neither the subclass's own marked methods, registered by `__init__`,
-        # nor a later registration reach the mapping that was passed.
+        # The mapping receives neither the marked methods of the subclass, which
+        # `__init__` registers, nor any later registration.
         rpc.add_method(multiply, name="times")
         self.assertEqual({"multiply": multiply}, methods)
-        # ...and the server keeps what it was given once the caller drops it.
+        # The server also keeps its copy after the caller clears the mapping.
         methods.clear()
         self.rpc_call(
             '{"jsonrpc": "2.0", "method": "multiply", "params": [6, 7], "id": 1}',
@@ -554,7 +553,7 @@ class JsonRpcServerTest(unittest.TestCase):
             {"jsonrpc": "2.0", "result": ["hello", 5], "id": 1},
             rpc=rpc,
         )
-        # The unprefixed name is not registered
+        # The server does not register the name without the prefix
         self.rpc_call(
             '{"jsonrpc": "2.0", "method": "get_data", "id": 2}',
             {
@@ -572,7 +571,7 @@ class JsonRpcServerTest(unittest.TestCase):
         def ping() -> str:
             return "pong"
 
-        self.assertEqual("pong", ping())  # Not rebound to the return value
+        self.assertEqual("pong", ping())  # The decorator returned the function
         self.rpc_call(
             '{"jsonrpc": "2.0", "method": "ping", "id": 1}',
             {"jsonrpc": "2.0", "result": "pong", "id": 1},
@@ -588,8 +587,8 @@ class JsonRpcServerTest(unittest.TestCase):
             return "pong"
 
         rpc = JsonRpcServer()
-        rpc.add_method(ping)  # Falls back to __name__
-        rpc.add_method(decorated)  # Falls back to __rpc__
+        rpc.add_method(ping)  # Uses __name__
+        rpc.add_method(decorated)  # Uses __rpc__
         for name in ("ping", "renamed"):
             with self.subTest(method=name):
                 self.rpc_call(

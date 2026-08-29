@@ -5,8 +5,9 @@ import math
 from pyjsonrpc2.server import JsonRpcServer, rpc_method
 
 
-# Methods marked with the @rpc_method decorator will automatically be registered when creating an instance.
-# @rpc_method also allows setting a different name internally for the rpc method (not an alias).
+# The server registers the methods marked with @rpc_method when you create an instance.
+# @rpc_method can also give the rpc method a different name. This is a new name, not an
+# alias.
 class MathServer(JsonRpcServer):
     @rpc_method
     def square(self, x):
@@ -16,18 +17,19 @@ class MathServer(JsonRpcServer):
     def calculate_cube(self, x):
         return x**3
 
-    def not_added(self):  # Will not be registered as an rpc method.
+    def not_added(self):  # The server does not register this method.
         return "foo"
 
 
-# Is it also possible to pass a mapping of strings to functions
+# You can also pass a mapping of names to functions
 server = MathServer({"get_version": lambda: "1.0"})
 
 
-# Similarly to the subclassing usage, @rpc_method marked methods of a class will be added to the server when an instance is passed to add_object().
+# add_object() works in the same way as the subclass: it adds the methods marked with
+# @rpc_method of the instance that you give to it.
 class MathUtils:
     @staticmethod
-    @rpc_method  # Order of decorators is important here.
+    @rpc_method  # The order of the decorators is important here.
     def multiply(a, b):
         return a * b
 
@@ -37,14 +39,14 @@ class MathUtils:
             raise ValueError("Cannot divide by zero")
         return a / b
 
-    def not_added(self):  # Will not be registered as a rpc method.
+    def not_added(self):  # The server does not register this method.
         return "foo"
 
 
 server.add_object(MathUtils())
 
 
-# Adding individual methods can be done through add_method().
+# Use add_method() to add one method at a time.
 # Method #1
 @server.add_method
 def add(a, b):
@@ -69,7 +71,7 @@ server.add_method(natural_logarithm, name="ln")
 server.add_method(lambda a, b: a % b, name="modulo")
 
 
-# JsonRpcServer throws a ValueError when attempting to add a method with an already existing name.
+# JsonRpcServer raises a ValueError if you add a method with a name that already exists.
 try:
     server.add_method(lambda x: x**2, name="square")
 except ValueError as e:
