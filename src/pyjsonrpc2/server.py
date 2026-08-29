@@ -11,6 +11,7 @@ __all__ = ["JsonRpcError", "JsonRpcServer", "rpc_method"]
 import inspect
 import logging
 from enum import Enum
+from threading import Lock
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from orjson import Fragment, loads
@@ -140,10 +141,13 @@ class JsonRpcServer:
         )
         self._dumps = _bind_dumps(dumps_kwargs)
         self._signatures: dict[Callable[..., Any], Signature] = {}
+        self._lock = Lock()
         self.add_object(self)
 
     def add_object(self, obj: object, *, prefix: str = "") -> None:
         """Register every `rpc_method`-marked method of an object.
+
+        This method is thread safe.
 
         Args:
             obj: The object to scan. The server ignores everything else that it holds.
@@ -153,15 +157,26 @@ class JsonRpcServer:
         Raises:
             ValueError: If one of the new names is already registered.
         """
+        new: dict[str, Callable[..., Any]] = {}
         for name, method in inspect.getmembers(obj, inspect.isroutine):
             if hasattr(method, "__rpc__"):
-                self.add_method(method, name=prefix + (method.__rpc__ or name))
+                key = prefix + (method.__rpc__ or name)
+                if key in new:
+                    msg = f"Method {key!r} already registered"
+                    raise ValueError(msg)
+                new[key] = method
+        with self._lock:
+            clash = new.keys() & self._methods.keys()
+            if clash:
+                msg = f"Method {min(clash)!r} already registered"
+                raise ValueError(msg)
+            self._methods = {**self._methods, **new}
 
     def add_method(self, method: F, *, name: str | None = None) -> F:
         """Register a single callable as an RPC method.
 
-        This method returns the callable unchanged, so you can also use it as a
-        decorator:
+        This method is thread safe. It returns the callable unchanged, so you can also
+        use it as a decorator:
 
             @server.add_method
             def add(a, b):
@@ -181,10 +196,11 @@ class JsonRpcServer:
             ValueError: If the name is already registered.
         """
         name = name or getattr(method, "__rpc__", None) or method.__name__
-        if name in self._methods:
-            msg = f"Method {name!r} already registered"
-            raise ValueError(msg)
-        self._methods[name] = method
+        with self._lock:
+            if name in self._methods:
+                msg = f"Method {name!r} already registered"
+                raise ValueError(msg)
+            self._methods[name] = method
         return method
 
     def _signature(self, method: Callable[..., Any]) -> Signature:
@@ -282,7 +298,7 @@ class JsonRpcServer:
 
         # Find the method in the registry
         try:
-            method = self._methods[method_name]
+            method = self._methods[method_name]  # Atomic
         except KeyError:
             return _Error.METHOD_NOT_FOUND.body, id, True
 
