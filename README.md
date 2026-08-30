@@ -9,22 +9,21 @@
 A correct, transport-agnostic Python implementation of the JSON-RPC 2.0 protocol.
 
 ## Key features
-- Both halves of the protocol: `JsonRpcServer` and `JsonRpcClient`
-- Full compliance with the [JSON-RPC 2.0 specification](https://www.jsonrpc.org/specification), batch requests and notifications included
-- Transport-agnostic: hand `call()` a raw request and send back the raw bytes it returns; the client hands you the raw bytes of a request and a `concurrent.futures.Future` to read its answer from
-- Responses are matched to requests by `id`, so a transport may answer out of order, from another thread, or not at all
-- Accepts `str`, `bytes`, `bytearray` and `memoryview` input
-- Multiple method registration patterns (constructor mapping, class-based, individual methods, lambda, etc.)
-- Automatic & custom error handling capabilities
-- Complete type hints (passes `pyrefly` on the `strict` preset)
-- Extensive unit tests (full coverage)
-- [Semantic versioning](https://semver.org/) adherence
+- Fully complies with the [JSON-RPC 2.0 specification](https://www.jsonrpc.org/specification)
+- Works over any transport: the library does no I/O
+  - the server takes a raw request and returns the raw bytes of the response
+  - the client returns the raw bytes of a request and a `concurrent.futures.Future` that receives the answer
+- Works from several threads: the client is thread safe, and the server is thread safe when your registered methods are also thread safe
+- Accepts JSON input as `str`, `bytes`, `bytearray` or `memoryview`
+- Declares complete type hints (passes `pyrefly` on the `strict` preset)
+- Covers every line with unit tests
+- Follows [semantic versioning](https://semver.org/)
 
 ## Installation
 
 `pyjsonrpc2` requires Python 3.11 or later.
 
-To install the package, use [pip](https://pip.pypa.io/en/stable/):
+Use [pip](https://pip.pypa.io/en/stable/) to install the package:
 
 ```bash
 pip install pyjsonrpc2
@@ -32,13 +31,13 @@ pip install pyjsonrpc2
 
 ## Usage
 
-The two halves never meet. `JsonRpcServer` turns the raw bytes of a request into the raw bytes of a response; `JsonRpcClient` turns a method call into the raw bytes of a request plus the `Future` its answer will arrive in. Neither performs any I/O of its own — carrying the bytes between them is your job.
+`JsonRpcServer` turns the raw bytes of a request into the raw bytes of a response. `JsonRpcClient` turns a method call into the raw bytes of a request and a `Future` that receives the answer. Neither half does any I/O.
 
-For more info, check the [examples/](examples/) directory.
+The [examples/](examples/) directory has more examples.
 
-## Server
+### Server
 
-### Basic Server Creation
+#### Basic server creation
 
 ```python
 from pyjsonrpc2.server import JsonRpcServer, rpc_method, JsonRpcError
@@ -47,15 +46,15 @@ from pyjsonrpc2.server import JsonRpcServer, rpc_method, JsonRpcError
 server = JsonRpcServer()
 ```
 
-### Method Registration Patterns
+#### Method registration patterns
 
-These are the main patterns for registering RPC methods. [examples/server/registering_methods.py](examples/server/registering_methods.py) contains a few more.
-1. Passing a mapping of names to callables to the constructor:
+These are the main patterns to register RPC methods. [examples/server/registering_methods.py](examples/server/registering_methods.py) shows a few more.
+1. Give a mapping of names to callables to the constructor:
 ```python
 server = JsonRpcServer({"get_version": lambda: "1.0"})
 ```
 
-2. Class-based approach with decorators:
+2. Decorate the methods of a subclass:
 ```python
 class MathServer(JsonRpcServer):
     @rpc_method
@@ -70,7 +69,7 @@ class MathServer(JsonRpcServer):
 server = MathServer()
 ```
 
-3. Registering the decorated methods of any other object, optionally under a `prefix` which keeps two objects exposing the same method names apart:
+3. Register the decorated methods of another object. An optional `prefix` keeps two objects that have the same method names separate:
 ```python
 class MathUtils:
     @rpc_method
@@ -81,14 +80,14 @@ class MathUtils:
 server.add_object(MathUtils(), prefix="utils.")  # Registers "utils.multiply"
 ```
 
-4. Adding individual methods using decorators:
+4. Add one method with a decorator:
 ```python
 @server.add_method
 def add(a, b):
     return a + b
 ```
 
-5. Adding methods with custom names:
+5. Add a method under a different name:
 ```python
 def sub(a, b):
     return a - b
@@ -97,21 +96,21 @@ def sub(a, b):
 server.add_method(sub, name="subtract")
 ```
 
-6. Adding lambda functions:
+6. Add a lambda function:
 ```python
 server.add_method(lambda a, b: a % b, name="modulo")
 ```
 
-### Error Handling
-Error handling features:
-- Custom error codes for implementation-defined & application-defined errors through the `JsonRpcError` class
-- Automatic conversion of Python exceptions to Internal error (`-32603`) responses
-- Automatic detection of argument mismatches, reported as Invalid params (`-32602`)
-- Support for additional error data in a structured format
-- Built-in handling of protocol-level errors (invalid JSON, missing required fields, etc.)
-- Error logging for debugging purposes, on the `pyjsonrpc2.server` logger, at the `ERROR` level and with a traceback
+#### Error handling
+The server handles errors as follows:
+- `JsonRpcError` carries a custom code for an implementation-defined or an application-defined error
+- Any other Python exception becomes an Internal error (`-32603`) response
+- An argument mismatch becomes an Invalid params (`-32602`) response
+- An error can carry additional data in any JSON structure
+- The server answers a protocol error itself, such as invalid JSON or a missing key
+- The server logs an uncaught exception on the `pyjsonrpc2.server` logger, at the `ERROR` level and with a traceback
 
-1. Custom Implementation-Defined Errors:
+1. Raise a custom implementation-defined error:
 ```python
 class AdvancedMathServer(JsonRpcServer):
     @rpc_method
@@ -125,7 +124,7 @@ class AdvancedMathServer(JsonRpcServer):
         return a / b
 ```
 
-2. Multiple Error Conditions:
+2. Use more than one error condition:
 ```python
 class AdvancedMathServer(JsonRpcServer):
     @rpc_method
@@ -144,11 +143,11 @@ class AdvancedMathServer(JsonRpcServer):
         # ... implementation ...
 ```
 
-The `data` passed to `JsonRpcError` must be JSON serializable. A return value which is not is caught as well, and answered with an Internal error carrying the serialization failure as its `data`.
+The `data` that you give to `JsonRpcError` must be JSON serializable. A return value must also be JSON serializable. The server catches a return value that is not, and answers with an Internal error. That error carries the serialization failure as its `data`.
 
-### Request execution
+#### Request execution
 
-`call()` returns the encoded response as `bytes`, or `None` when the client is owed no answer, i.e. for a single notification or for a batch holding only notifications.
+`call()` returns the encoded response as `bytes`. It returns `None` when the server owes the client no answer. There are two such cases: a single notification, and a batch that holds only notifications.
 
 ```python
 server.call('{"jsonrpc": "2.0", "method": "add", "params": [5, 3], "id": 1}')
@@ -169,7 +168,7 @@ server.call(
 # b'[{"jsonrpc":"2.0","id":3,"result":3},{"jsonrpc":"2.0","id":4,"result":1}]'
 ```
 
-Extra keyword arguments for `orjson.dumps()` can be supplied through `dumps_kwargs`.
+`dumps_kwargs` gives extra keyword arguments to `orjson.dumps()`.
 
 ```python
 import orjson
@@ -177,11 +176,11 @@ import orjson
 server = JsonRpcServer(dumps_kwargs={"option": orjson.OPT_INDENT_2})
 ```
 
-## Client
+### Client
 
-### Making calls
+#### Making calls
 
-`request()` returns a pair: the bytes to send, and the `Future` its answer will be delivered to. Nothing is settled until a response is fed back to `handle()`, which matches it to its request by `id`.
+`request()` returns two things: the bytes to send, and the `Future` that receives the answer. The future stays pending until you give the response to `handle()`. `handle()` matches the response to its request by `id`.
 
 ```python
 from pyjsonrpc2.client import JsonRpcClient
@@ -191,30 +190,31 @@ client = JsonRpcClient()
 request, future = client.request("subtract", 42, 23)
 # request: b'{"jsonrpc":"2.0","method":"subtract","params":[42,23],"id":1}'
 
-transport.send(request)  # a socket, an HTTP request, a pipe... whatever you use
+transport.send(request)  # a socket, an HTTP request, a pipe, or anything else
 client.handle(transport.recv())
 future.result()  # 19
 ```
 
-Parameters are either positional or named, exactly as in the protocol: `*args` becomes the `"params"` array, `**kwargs` becomes the `"params"` object, and asking for both raises `ValueError`. The method name is positional-only, so a parameter that happens to be called `method` still lands in `"params"`.
+Parameters are positional or named, exactly as in the protocol. `*args` becomes the `"params"` array. `**kwargs` becomes the `"params"` object. A call that gives both raises `ValueError`. The method name is positional-only, so a parameter with the name `method` also goes into `"params"`. A method name that is not a string raises `TypeError`.
 
 ```python
 client.request("subtract", minuend=42, subtrahend=23)
 client.request("subtract", 42, subtrahend=23)  # ValueError
+client.request(42)  # TypeError
 ```
 
-### Notifications
+#### Notifications
 
-A notification carries no `id`, so the server owes nothing back and there is no future to hand out — not even a failure can be reported against it.
+A notification carries no `id`. The server owes no answer, and the client gives you no future. The client can match nothing against a notification, not even a failure.
 
 ```python
 client.notify("log", "hello")
 # b'{"jsonrpc":"2.0","method":"log","params":["hello"]}'
 ```
 
-### Batch requests
+#### Batch requests
 
-A batch accumulates calls and encodes them as one payload. Requests hand back their own future, notifications hand back nothing, and one payload back settles all of them at once.
+A batch collects calls and encodes them as one payload. `request()` returns a future for its own element. `notify()` returns nothing. One response payload settles every future in the batch.
 
 ```python
 batch = client.batch()
@@ -229,23 +229,36 @@ total.result()  # 7
 difference.result()  # 19
 ```
 
-Encoding does not close a batch: more calls can be added and the batch encoded again. An empty one is refused with `ValueError`, since the specification has no answer for it.
+`encode()` does not close a batch. You can add more calls and encode the batch again. `encode()` refuses an empty batch with `ValueError`, because the specification has no answer for one.
 
-### Handling responses
+#### Handling responses
 
-`handle()` accepts single responses and batches, as JSON text or its UTF-8 encoding, in any order and from any thread. Its return value is the errors it could **not** attribute to a pending request — usually empty:
+`handle()` accepts a single response or a batch, as JSON text or as its UTF-8 encoding. It accepts them in any order and from any thread. It returns the errors that the server sent under a null `id`, which belong to no request. This list is usually empty:
 
 ```python
 unattributed = client.handle(response)
 ```
 
-A server that cannot parse what it was sent has no `id` to answer under, so it replies with a null one. Nothing can be matched against that, and guessing would fail the wrong call, so those errors are handed back to the caller instead. Responses that match nothing else — a late answer, a duplicate, an `id` never sent — are logged on the `pyjsonrpc2.client` logger at the `WARNING` level.
+A server that cannot parse a request has no `id` to answer under, so it answers with a null `id`. The client can match nothing against a null `id`. A guess would fail the wrong call, so `handle()` returns these errors to you instead.
 
-### Error handling
+The client logs a response that matches nothing else, then drops it. It uses the `pyjsonrpc2.client` logger at the `WARNING` level. Three examples are a late answer, a duplicate, and an `id` that you never sent.
 
-- An `"error"` response raises `JsonRpcError` out of `Future.result()`, carrying the server's `code`, `message` and `data`. It is the same class the server raises, so the two sides never have to translate anything
-- A response that is not a JSON-RPC response — wrong version, both `"result"` and `"error"`, neither of them — fails the future it matches with `InvalidResponseError`, so whoever waits on that call is the one who hears about it
-- A payload that is unusable as a whole — not valid JSON, not an object or an array, an empty array — is raised out of `handle()` itself, and nothing in it is settled
+#### Error handling
+
+- An `"error"` response raises `JsonRpcError` out of `Future.result()`. That error carries the server's `code`, `message` and `data`. The server raises the same class, so neither half must translate anything.
+- A response that is not a JSON-RPC response fails the future that it matches, with `InvalidResponseError`. The caller of that one request is the one who hears about it. A response is malformed when:
+  - the `"jsonrpc"` version is wrong
+  - it has both a `"result"` and an `"error"`
+  - it has neither of them
+- `handle()` raises `InvalidResponseError` itself when the payload as a whole is unusable. It settles nothing in that case. A payload is unusable when:
+  - it is not valid JSON
+  - it is not an object and not an array
+  - it is an empty array
+- A response that belongs to no request and is not a well-formed error settles no future. `handle()` raises nothing for it and does not return it. The client logs it and drops it. This group holds:
+  - a response with no `id`
+  - a null `id` that carries a `"result"`
+  - a null `id` that carries an unusable `"error"`
+  - a batch element that is not an object
 
 ```python
 from pyjsonrpc2.client import InvalidResponseError, JsonRpcError
@@ -258,16 +271,16 @@ except InvalidResponseError as e:
     print("the server answered with something that is not JSON-RPC:", e)
 ```
 
-A request counts as outstanding from the moment it is built, whether or not it ever reaches a transport. When a transport dies there is nobody left to answer the calls in flight, so release them rather than leaving their futures pending forever:
+A request is pending from the moment that the client builds it. This is true even if the request never reaches a transport. When a transport stops, nothing can answer the requests that are still pending. Release them, or their futures stay pending forever:
 
 ```python
-client.cancel_pending(ConnectionError("the socket went away"))  # returns how many
-client.cancel_pending()  # cancels them instead: result() raises CancelledError
+client.cancel_pending(ConnectionError("socket closed"))  # returns how many were pending
+client.cancel_pending()  # cancels them instead. result() raises CancelledError
 ```
 
-### Client configuration
+#### Client configuration
 
-Both arguments are keyword-only. `dumps_kwargs` works as it does on the server, and `id_iterator` replaces the source of request ids (`itertools.count(1)` by default) for servers that are particular about their type. It must yield values that are unique for the lifetime of the client and never `None`.
+Both arguments are keyword-only. `dumps_kwargs` works as it does on the server. `id_iterator` replaces the source of request ids, which is `itertools.count(1)` by default. Use it for a server that is particular about the type of an id. The iterator must give JSON serializable values that are unique for the life of the client, and never `None`. The client refuses an id that already awaits a response, and raises `ValueError`. It does not lose the future that waits under that id.
 
 ```python
 import itertools
