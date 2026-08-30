@@ -60,12 +60,11 @@ ignore = [
   "PT027",
   "ANN401",
 ]
-per-file-ignores."benchmarks/*" = [ "INP001" ]
 per-file-ignores."examples/*" = [ "ANN", "EM", "ERA001", "INP001", "T201", "TRY003" ]
 pydocstyle.convention = "google"
 
 [tool.pyrefly]
-project-includes = [ "src", "tests", "benchmarks" ]
+project-includes = [ "src", "tests" ]
 python-version = "3.11"
 preset = "strict"
 # `typing.override` is 3.12+, setUpClass in tests.
@@ -98,21 +97,34 @@ env_list = [
 description = "run the test driver with {basepython}"
 deps = [ "coverage" ]
 set_env.COVERAGE_FILE = "{work_dir}/.coverage"
-commands = [ [ "coverage", "run", "-m", "unittest", "discover" ] ]
+commands = [ [ "coverage", "run", "-m", "unittest", "discover", "-t", ".", "-s", "tests" ] ]
 
 [tool.tox.env.mindeps]
 description = "run the test driver against the lowest declared dependency versions"
 base_python = [ "3.11" ]
 uv_resolution = "lowest-direct"
 deps = []
-commands = [ [ "python", "-m", "unittest", "discover" ] ]
+commands = [ [ "python", "-m", "unittest", "discover", "-t", ".", "-s", "tests" ] ]
 
-[tool.tox.env.bench]
-description = "run the benchmark suite"
+[tool.tox.env.coverage]
+description = "combine coverage data and create report"
+skip_install = true
+deps = [ "coverage" ]
+depends = [ "3.*" ]
+commands = [ [ "coverage", "combine" ], [ "coverage", "report" ] ]
+parallel_show_output = true
+
+[tool.tox.env.bench-server]
+description = "run the server benchmark suite"
 deps = [ "pyperf" ]
-# pyperf will not create the directory its `-o` argument points into.
 commands_pre = [ [ "python", "-c", "import pathlib; pathlib.Path('.benchmarks').mkdir(exist_ok=True)" ] ]
 commands = [ [ "python", "benchmarks/bench_server.py", { replace = "posargs", extend = true } ] ]
+
+[tool.tox.env.bench-client]
+description = "run the client benchmark suite"
+deps = [ "pyperf" ]
+commands_pre = [ [ "python", "-c", "import pathlib; pathlib.Path('.benchmarks').mkdir(exist_ok=True)" ] ]
+commands = [ [ "python", "benchmarks/bench_client.py", { replace = "posargs", extend = true } ] ]
 
 [tool.tox.env.bench-compare]
 description = "compare two benchmark result files"
@@ -126,11 +138,3 @@ skip_install = true
 deps = [ "prek" ]
 recreate_commands = [ [ "{env_python}", "-Im", "prek", "clean" ] ]
 commands = [ [ "prek", "run", "--all-files" ] ]
-
-[tool.tox.env.coverage]
-description = "combine coverage data and create report"
-skip_install = true
-deps = [ "coverage" ]
-depends = [ "3.*" ]
-commands = [ [ "coverage", "combine" ], [ "coverage", "report" ] ]
-parallel_show_output = true

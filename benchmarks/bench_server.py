@@ -2,11 +2,13 @@
 
 Run it through tox, which supplies pyperf and the package itself::
 
-    tox -e bench                          # every benchmark
-    tox -e bench -- -b batch              # only the names containing "batch"
-    tox -e bench -- --fast                # fewer values, while iterating
-    tox -e bench -- --affinity 2          # pin the workers, for less jitter
-    tox -e bench -- -o .benchmarks/before.json
+    tox -e bench-server                          # every benchmark
+    tox -e bench-server -- -b batch              # only the names containing "batch"
+    tox -e bench-server -- --fast                # fewer values, while iterating
+    tox -e bench-server -- --affinity 2          # pin the workers, for less jitter
+    tox -e bench-server -- -o .benchmarks/before.json
+
+The client half has its own suite, `bench_client.py`, run by `tox -e bench-client`.
 
 Comparisons are made with `tox -e bench-compare -- <before.json> <after.json>`.
 Only compare runs from the same machine and interpreter, otherwise the
@@ -15,15 +17,13 @@ difference being measured is the environment rather than the code.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import Any, NoReturn
 
-import pyperf
 from orjson import dumps
 
 from pyjsonrpc2.server import JsonRpcError, JsonRpcServer, rpc_method
 
-if TYPE_CHECKING:
-    from argparse import Namespace
+from . import make_runner
 
 
 class BenchServer(JsonRpcServer):
@@ -85,27 +85,9 @@ PAYLOADS: dict[str, bytes] = {
 }
 
 
-def _forward_cmdline_args(cmd: list[str], args: Namespace) -> None:
-    """Pass `--benchmark` on to the worker processes pyperf spawns.
-
-    Without this the workers would register the unfiltered list and run the
-    wrong benchmark for the task index they were handed.
-    """
-    if args.benchmark:
-        cmd.extend(("--benchmark", args.benchmark))
-
-
 if __name__ == "__main__":
     server = BenchServer()
-    runner = pyperf.Runner(add_cmdline_args=_forward_cmdline_args)
-    runner.argparser.add_argument(
-        "-b",
-        "--benchmark",
-        metavar="SUBSTRING",
-        help="only run the benchmarks whose name contains SUBSTRING",
-    )
-    runner.metadata["description"] = "pyjsonrpc2 JsonRpcServer.call()"
-    selected = runner.parse_args().benchmark
+    runner, selected = make_runner("pyjsonrpc2 JsonRpcServer.call()")
     for name, payload in PAYLOADS.items():
         if selected and selected not in name:
             continue
