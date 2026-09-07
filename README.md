@@ -11,8 +11,6 @@ A correct, transport-agnostic Python implementation of the JSON-RPC 2.0 protocol
 ## Key features
 - Fully complies with the [JSON-RPC 2.0 specification](https://www.jsonrpc.org/specification)
 - Works over any transport: the library does no I/O
-  - the server takes a raw request and returns the raw bytes of the response
-  - the client returns the raw bytes of a request and a `concurrent.futures.Future` that receives the answer
 - Works from several threads: the client is thread safe, and the server is thread safe when your registered methods are also thread safe
 - Accepts JSON input as `str`, `bytes`, `bytearray` or `memoryview`
 - Declares complete type hints (passes `pyrefly` on the `strict` preset)
@@ -33,7 +31,7 @@ pip install pyjsonrpc2
 
 `JsonRpcServer` turns the raw bytes of a request into the raw bytes of a response. `JsonRpcClient` turns a method call into the raw bytes of a request and a `Future` that receives the answer. Neither half does any I/O.
 
-The [examples/](examples/) directory has more examples.
+The [examples/](examples/) directory has more in-depth examples.
 
 ### Server
 
@@ -48,7 +46,7 @@ server = JsonRpcServer()
 
 #### Method registration patterns
 
-These are the main patterns to register RPC methods. [examples/server/registering_methods.py](examples/server/registering_methods.py) shows a few more.
+These are the main patterns to register RPC methods. See [examples/server/registering_methods.py](examples/server/registering_methods.py).
 1. Give a mapping of names to callables to the constructor:
 ```python
 server = JsonRpcServer({"get_version": lambda: "1.0"})
@@ -229,7 +227,7 @@ total.result()  # 7
 difference.result()  # 19
 ```
 
-`encode()` does not close a batch. You can add more calls and encode the batch again. `encode()` refuses an empty batch with `ValueError`, because the specification has no answer for one.
+`encode()` does not close a batch. You can add more calls and encode the batch again. `encode()` refuses an empty batch with `ValueError`, because the specification disallows it.
 
 #### Handling responses
 
@@ -290,7 +288,7 @@ client = JsonRpcClient(id_iterator=(f"call-{n}" for n in itertools.count()))
 
 ## Tests
 
-The simplest way to run tests is:
+To run tests, clone the repository, install the package in your environment and run the following command at the root of the repository:
 
 ```bash
 python -m unittest

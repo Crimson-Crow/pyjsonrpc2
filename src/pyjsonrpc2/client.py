@@ -11,7 +11,8 @@ from __future__ import annotations
 __all__ = ["InvalidResponseError", "JsonRpcBatch", "JsonRpcClient", "JsonRpcError"]
 
 import logging
-from concurrent.futures import Future
+from concurrent.futures import Future, InvalidStateError
+from concurrent.futures._base import CANCELLED
 from itertools import count
 from threading import Lock
 from typing import TYPE_CHECKING, Any
@@ -37,6 +38,32 @@ class InvalidResponseError(ValueError):
     """
 
 
+class _RpcFuture(Future[Any]):
+    """A future that notifies its own cancellation.
+
+    `Future.cancel()` only records the cancellation. The executor that owns the work
+    item notifies it later. This client is not an executor, so nothing else notifies
+    it. `concurrent.futures.wait()` and `as_completed()` would then count a canceled
+    request as outstanding forever.
+    """
+
+    def cancel(self) -> bool:
+        """Cancel the request, and notify the waiters of the future.
+
+        Returns:
+            True if the future is canceled. False if the future already holds a result
+            or an exception.
+        """
+        if not super().cancel():
+            return False
+        with self._condition:
+            # Notifying twice would log at CRITICAL level, then raise `RuntimeError`.
+            if self._state is CANCELLED:
+                self.set_running_or_notify_cancel()
+            # State is now CANCELLED_AND_NOTIFIED.
+        return True
+
+
 def _build_request(
     method: str, args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> dict[str, Any]:
@@ -46,7 +73,6 @@ def _build_request(
         TypeError: If `method` is not a string.
         ValueError: If the caller gives positional and keyword parameters together.
     """
-    # `isinstance` because `method` comes from the caller, not from a JSON decode
     if not isinstance(method, str):
         msg = f"'method' must be a string (type: {type(method)})"
         raise TypeError(msg)
@@ -164,11 +190,18 @@ class JsonRpcBatch:
 class JsonRpcClient:
     """A JSON-RPC 2.0 client that gives a `Future` for every request it builds.
 
-    The client does no I/O of its own. Send the bytes from `request()` over the
-    transport of your choice. Give the bytes that come back to `handle()`, which settles
-    the future that the response is owed to. The client matches the two on the `"id"`
-    that it assigns. A transport can therefore answer out of order, from another thread,
-    or not at all.
+    The client does no I/O. The caller moves the bytes:
+
+    - `request()` gives the bytes of a request, and the future for its answer.
+    - The transport sends those bytes, and receives the response.
+    - `handle()` takes the response, and settles the future.
+
+    The client writes an `"id"` into every request. It matches each response to a future
+    on that same `"id"`. A transport can therefore:
+
+    - answer the requests in any order
+    - answer from another thread
+    - never answer at all
 
     Example:
         >>> client = JsonRpcClient()
@@ -204,7 +237,7 @@ class JsonRpcClient:
 
     def _register(self, request: dict[str, Any]) -> Future[Any]:
         """Add an id to a request object and keep the future that answers it."""
-        future: Future[Any] = Future()
+        future: Future[Any] = _RpcFuture()
         with self._lock:
             id = next(self._ids)  # noqa: A001
             # One lookup only. If the id iterator repeats an id, this stops the
@@ -275,7 +308,7 @@ class JsonRpcClient:
         """
         return JsonRpcBatch(self._register, self._dumps)
 
-    def _settle(self, response: Any) -> JsonRpcError | None:  # noqa: C901, PLR0911, PLR0912
+    def _settle(self, response: Any) -> JsonRpcError | None:  # noqa: C901, PLR0912
         """Settle the future that one response object is owed to.
 
         Args:
@@ -305,10 +338,10 @@ class JsonRpcClient:
             with self._lock:
                 future = self._pending.pop(id, None)
             if future is None:
-                _LOGGER.warning("Discarding a response to the unknown id %r", id)
+                _LOGGER.warning(
+                    "Discarding a response to the unknown id %r: %r", id, response
+                )
                 return None
-            if not future.set_running_or_notify_cancel():
-                return None  # The caller canceled the request before its answer
 
         # Decode into a result, or into an exception to raise out of the future
         result = response.get("result", _SENTINEL)
@@ -325,10 +358,15 @@ class JsonRpcClient:
                 exc = InvalidResponseError(f"Not an error object: {error!r}")
 
         if future is not None:
-            if exc is None:
-                future.set_result(result)
-            else:
-                future.set_exception(exc)
+            try:
+                if exc is None:
+                    future.set_result(result)
+                else:
+                    future.set_exception(exc)
+            except InvalidStateError:
+                # The caller canceled the request before its answer arrived.
+                # `_RpcFuture.cancel()` notified it already.
+                pass
             return None
         if isinstance(exc, JsonRpcError):  # No future to raise it out of, so return it
             return exc
@@ -338,7 +376,7 @@ class JsonRpcClient:
     def handle(
         self, response: bytes | bytearray | memoryview | str
     ) -> list[JsonRpcError]:
-        """Settle the futures that the responses in one raw payload are owed to.
+        """Parse a raw payload and settle the associated futures.
 
         The method accepts a single response or a batch, in any order and from any
         thread. It settles the matching future as follows:
@@ -408,8 +446,9 @@ class JsonRpcClient:
         for future in pending.values():
             if exc is None:
                 future.cancel()
-                # This notifies `concurrent.futures.wait()`. `cancel()` alone does not
-                future.set_running_or_notify_cancel()
-            elif future.set_running_or_notify_cancel():
+                continue
+            try:  # Slower than contextlib.suppress # noqa: SIM105
                 future.set_exception(exc)
+            except InvalidStateError:
+                pass  # The caller canceled this request first.
         return len(pending)

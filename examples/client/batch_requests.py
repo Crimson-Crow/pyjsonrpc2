@@ -95,8 +95,8 @@ batch.request("sum", 3, 4)
 print(len(json.loads(batch.encode())))  # Output: 2
 
 
-# These are ordinary concurrent.futures.Future objects, so the whole of that module
-# works on them: wait(), as_completed(), add_done_callback(), and so on.
+# These futures behave like any other concurrent.futures.Future, so the whole of
+# that module works on them: wait(), as_completed(), add_done_callback(), and more.
 batch = client.batch()
 futures = [batch.request("sum", n, n) for n in range(5)]
 client.handle(transport(batch.encode()))

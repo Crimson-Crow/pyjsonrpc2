@@ -56,17 +56,17 @@ def rpc_method(*, name: str | None = None) -> Callable[[F], F]: ...  # pragma: n
 def rpc_method(
     _func: F | None = None, *, name: str | None = None
 ) -> Callable[[F], F] | F:
-    """Mark a function as an RPC method.
+    """Mark a method for registration on a `JsonRpcServer`, under a name of your choice.
 
     Use it bare (`@rpc_method`) or with arguments (`@rpc_method(name="cube")`). A
-    `JsonRpcServer` subclass registers its marked methods when you create an instance of
-    it. `JsonRpcServer.add_object()` registers the marked methods of any other object. A
-    marked plain function is different: you must give it to `JsonRpcServer.add_method()`
-    yourself. The mark then supplies only the name.
+    `JsonRpcServer` subclass registers its own marked methods when you create an
+    instance of it. `JsonRpcServer.add_object()` registers the marked methods of any
+    other object. The `name` argument replaces the name of the function at registration.
+    `JsonRpcServer.add_method()` reads that name too. You must give a marked plain
+    function to that method yourself.
 
     Args:
         _func: The function to mark. Python supplies it when you use the decorator bare.
-            Do not pass it yourself.
         name: The name that clients use to call the method. Defaults to the name of the
             function itself.
 
@@ -102,14 +102,14 @@ class JsonRpcServer:
     """A JSON-RPC 2.0 server that dispatches requests to the methods registered on it.
 
     The server does no I/O of its own. Give a raw request to `call()`, then send the
-    bytes that it returns over the transport of your choice.
+    bytes that it returns to the transport of your choice.
 
     You can register methods in four ways:
 
     - Give a mapping of names to callables to the constructor.
-    - Mark the methods of a subclass with `rpc_method`.
-    - Call `add_method()` for a single callable.
-    - Call `add_object()` for every marked method of an object.
+    - Decorate the methods of a subclass of this class with `rpc_method`.
+    - Call `add_method()` to register a single callable.
+    - Call `add_object()` to register every `rpc_method` decorated method of an object.
 
     Example:
         >>> class MathServer(JsonRpcServer):
@@ -131,10 +131,10 @@ class JsonRpcServer:
         """Create a server and register its own `rpc_method`-marked methods.
 
         Args:
-            methods: Mapping of RPC method names to the callables to register. The
-                server copies it. This path does not read `__rpc__`.
+            methods: Mapping of RPC method names to the callables to register.
+                This path does not read the name set by `rpc_method` on the callables.
             dumps_kwargs: Extra keyword arguments for `orjson.dumps()`, such as
-                `{"option": orjson.OPT_INDENT_2}`. The server reads them only here.
+                `{"option": orjson.OPT_INDENT_2}`.
         """
         self._methods: dict[str, Callable[..., Any]] = (
             {} if methods is None else dict(methods)
@@ -155,32 +155,34 @@ class JsonRpcServer:
                 objects that have the same method names separate.
 
         Raises:
-            ValueError: If one of the new names is already registered.
+            ValueError: If two marked methods resolve to the same name, or if one or
+                more of the new names are already registered.
         """
         new: dict[str, Callable[..., Any]] = {}
+        duplicate: set[str] = set()
         for name, method in inspect.getmembers(obj, inspect.isroutine):
             if hasattr(method, "__rpc__"):
                 key = prefix + (method.__rpc__ or name)
                 if key in new:
-                    msg = f"Method {key!r} already registered"
-                    raise ValueError(msg)
+                    duplicate.add(key)
                 new[key] = method
+        if duplicate:
+            names = ", ".join(map(repr, sorted(duplicate)))
+            msg = f"Duplicate method names: {names}"
+            raise ValueError(msg)
         with self._lock:
             clash = new.keys() & self._methods.keys()
             if clash:
-                msg = f"Method {min(clash)!r} already registered"
+                names = ", ".join(map(repr, sorted(clash)))
+                msg = f"Methods already registered: {names}"
                 raise ValueError(msg)
-            self._methods = {**self._methods, **new}
+            self._methods = {**self._methods, **new}  # Avoids partial concurrent reads
 
     def add_method(self, method: F, *, name: str | None = None) -> F:
         """Register a single callable as an RPC method.
 
         This method is thread safe. It returns the callable unchanged, so you can also
-        use it as a decorator:
-
-            @server.add_method
-            def add(a, b):
-                return a + b
+        use it as a decorator.
 
         Args:
             method: The callable to register. The server calls it with the `"params"`
@@ -216,11 +218,10 @@ class JsonRpcServer:
         return signature
 
     def _validate_and_execute(self, request: Any) -> tuple[Any, _Id | _Sentinel, bool]:  # noqa: C901, PLR0911, PLR0912
-        """Validate one request and run the method that it names.
+        """Validate a request and run the method that it names.
 
         Args:
-            request: Any decoded JSON value. It is not always an object: the `"jsonrpc"`
-                lookup below is what rejects the values that are not objects.
+            request: Any decoded JSON value.
 
         Returns:
             An `(obj, id, error)` tuple:
@@ -329,35 +330,29 @@ class JsonRpcServer:
         id: _Id = None,  # noqa: A002
         error: bool = True,  # noqa: FBT001 FBT002
     ) -> bytes:
-        """Build one response envelope and serialize it.
-
-        There is nothing to encode for a notification, because the callers remove them
-        first.
-        """
+        """Build a response object and serialize it."""
         response = {"jsonrpc": "2.0", "id": id, "error" if error else "result": obj}
         try:
             return self._dumps(response)
         except TypeError as e:
-            # The result is not serializable. Answer the same id with an internal
-            # error instead. This call recurses only one level deep, because the new
-            # payload is a string and the id already survived a JSON decode.
+            # The result is not serializable. Answer the same id with an internal error
+            # instead. This call recurses only one level deep, because the new payload
+            # is a string and the id already survived a JSON decode.
             _LOGGER.exception("RPC Error [id:%s] Unserializable response", id)
             return self._encode(_Error.INTERNAL_ERROR.with_data(str(e)), id)
 
     def call(self, request: bytes | bytearray | memoryview | str) -> bytes | None:
-        """Handle one raw request and return the raw response.
+        """Handle a raw request or a batch request and return the raw response.
 
-        The method accepts a single request or a batch. It reports a failure to the
-        client and raises nothing. If a method raises an exception that is not a
-        `JsonRpcError`, the server logs it with level ERROR and answers the client with
-        -32603 Internal error.
+        If a method raises an exception that is not a `JsonRpcError`, the server logs it
+        with level ERROR and answers the client with -32603 Internal error.
 
         Args:
             request: The request, as JSON text or as its UTF-8 encoding.
 
         Returns:
-            The encoded response. Returns `None` when the client is owed no answer, that
-            is, for a single notification or for a batch of notifications only.
+            The encoded response. Returns `None` when `request` is a notification or a
+            batch of notifications, meaning the client is owed no answer.
         """
         try:
             decoded = loads(request)

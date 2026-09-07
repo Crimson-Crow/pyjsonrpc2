@@ -564,6 +564,58 @@ class JsonRpcServerTest(unittest.TestCase):
             rpc=rpc,
         )
 
+    def test_add_object_duplicate_name_in_one_object(self) -> None:
+        # Two pairs of marked methods resolve to the same registry name. `add_object`
+        # reports both names, and it registers nothing.
+        class Twice:
+            @rpc_method(name="same")
+            def first(self) -> None: ...
+
+            @rpc_method(name="same")
+            def second(self) -> None: ...
+
+            @rpc_method(name="other")
+            def third(self) -> None: ...
+
+            @rpc_method(name="other")
+            def fourth(self) -> None: ...
+
+        rpc = JsonRpcServer()
+        with self.assertRaisesRegex(
+            ValueError, "Duplicate method names: 'other', 'same'"
+        ):
+            rpc.add_object(Twice())
+        # The failed scan registered none of the four methods
+        self.rpc_call(
+            '{"jsonrpc": "2.0", "method": "same", "id": 1}',
+            {
+                "jsonrpc": "2.0",
+                "error": {"code": -32601, "message": "Method not found"},
+                "id": 1,
+            },
+            rpc=rpc,
+        )
+
+    def test_add_object_duplicate_name_in_registry(self) -> None:
+        # The scan finds eight names that the registry already holds. `add_object`
+        # sorts them, so the message does not depend on the scan order.
+        rpc = JsonRpcServer()
+        rpc.add_object(Handler())
+        with self.assertRaisesRegex(
+            ValueError,
+            "Methods already registered: 'custom_error', "
+            "'custom_error_without_data', 'get_data', 'raises_typeerror', "
+            "'returns_unencodable', 'subtract', 'sum', 'update'",
+        ):
+            rpc.add_object(Handler())
+        # A prefix separates the two objects, so the second scan then succeeds
+        rpc.add_object(Handler(), prefix="second.")
+        self.rpc_call(
+            '{"jsonrpc": "2.0", "method": "second.get_data", "id": 1}',
+            {"jsonrpc": "2.0", "result": ["hello", 5], "id": 1},
+            rpc=rpc,
+        )
+
     def test_add_method_returns_method(self) -> None:
         rpc = JsonRpcServer()
 

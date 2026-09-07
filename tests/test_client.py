@@ -331,13 +331,43 @@ class JsonRpcClientTest(unittest.TestCase):
 
     def test_cancelled_request(self) -> None:
         # A caller can abandon a request while it is pending. The client discards an
-        # answer that arrives afterwards, and does not set it on a future that would
+        # answer that arrives afterward, and does not set it on a future that would
         # refuse it.
         request, future = self.client.request("subtract", 42, 23)
         self.assertTrue(future.cancel())
         self.assertEqual(self.round_trip(request), [])
         self.assertTrue(future.cancelled())
+        # `wait()` counts a future in the CANCELLED state as outstanding. `cancel()`
+        # must therefore notify the cancellation, not only record it.
+        _, not_done = wait([future], timeout=5)
+        self.assertFalse(not_done)
         self.assertEqual(self.client.cancel_pending(), 0)  # Removed from the registry
+
+    def test_cancelled_request_never_sent(self) -> None:
+        # Nothing answers this request. `cancel()` is the only step that it gets.
+        _, future = self.client.request("subtract", 42, 23)
+        self.assertTrue(future.cancel())
+        _, not_done = wait([future], timeout=5)
+        self.assertFalse(not_done)
+        self.assertRaises(CancelledError, future.result)
+
+    def test_cancel_twice(self) -> None:
+        # The second call notifies nothing. It must not raise the `RuntimeError` that
+        # `set_running_or_notify_cancel()` gives for a repeated call.
+        _, future = self.client.request("subtract")
+        self.assertTrue(future.cancel())
+        self.assertTrue(future.cancel())
+        _, not_done = wait([future], timeout=5)
+        self.assertFalse(not_done)
+
+    def test_cancel_settled_request(self) -> None:
+        # A future that holds an answer refuses the cancellation. A plain `Future`
+        # does the same. The client must not notify a cancellation that did not happen.
+        request, future = self.client.request("subtract", 42, 23)
+        self.assertEqual(self.round_trip(request), [])
+        self.assertFalse(future.cancel())
+        self.assertFalse(future.cancelled())
+        self.assertEqual(future.result(), 19)
 
     def test_cancel_pending(self) -> None:
         _, first = self.client.request("subtract")
@@ -345,8 +375,8 @@ class JsonRpcClientTest(unittest.TestCase):
         self.assertEqual(self.client.cancel_pending(), 2)
         self.assertRaises(CancelledError, first.result)
         self.assertRaises(CancelledError, second.result)
-        # `wait()` blocks forever on a future that is only canceled, so the client
-        # must notify the cancellation as well as record it
+        # `wait()` counts a future in the CANCELLED state as outstanding. The client
+        # must therefore notify the cancellation, not only record it.
         _, not_done = wait([first, second], timeout=5)
         self.assertFalse(not_done)
         self.assertEqual(self.client.cancel_pending(), 0)
@@ -366,6 +396,8 @@ class JsonRpcClientTest(unittest.TestCase):
         self.assertTrue(future.cancel())
         self.assertEqual(self.client.cancel_pending(ConnectionError("gone")), 1)
         self.assertRaises(CancelledError, future.result)
+        _, not_done = wait([future], timeout=5)
+        self.assertFalse(not_done)
 
     def test_dumps_kwargs(self) -> None:
         client = JsonRpcClient(
