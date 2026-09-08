@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import gc
 import json
+import re
+import threading
 import unittest
+import weakref
+from functools import partial
 from types import MappingProxyType
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from pyjsonrpc2.server import JsonRpcError, JsonRpcServer, rpc_method
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator
 
 _LOGGER_NAME = "pyjsonrpc2.server"
 
@@ -55,6 +63,21 @@ class Handler(JsonRpcServer):
         return object()
 
 
+async def coroutine_method() -> int:
+    """A coroutine function, which the synchronous server must refuse to register."""
+    return 1
+
+
+def generator_method() -> Iterator[int]:
+    """A generator function. It returns a generator, which the encoder refuses."""
+    yield 1
+
+
+async def async_generator_method() -> AsyncIterator[int]:
+    """An async generator function. It returns an object of the same kind."""
+    yield 1
+
+
 class UnhashableMethod:  # noqa: PLW1641
     """A callable that cannot be a dict key.
 
@@ -65,6 +88,18 @@ class UnhashableMethod:  # noqa: PLW1641
         return self is other
 
     def __call__(self, a: float) -> float:  # pragma: no cover
+        return a
+
+
+class UnreferenceableMethod:
+    """A callable that cannot be a weak key.
+
+    A class with empty `__slots__` and no `__weakref__` slot takes no weak reference.
+    """
+
+    __slots__ = ()
+
+    def __call__(self, a: float) -> float:
         return a
 
 
@@ -80,7 +115,7 @@ class JsonRpcServerTest(unittest.TestCase):
 
     @staticmethod
     def remove_data(response: dict[str, Any]) -> None:
-        try:  # noqa: SIM105
+        try:
             response["error"].pop("data")
         except KeyError:
             pass
@@ -648,3 +683,365 @@ class JsonRpcServerTest(unittest.TestCase):
                     {"jsonrpc": "2.0", "result": "pong", "id": 1},
                     rpc=rpc,
                 )
+
+    def test_methods_lists_the_registry(self) -> None:
+        def ping() -> str:
+            return "pong"
+
+        rpc = JsonRpcServer({"multiply": ping})
+        rpc.add_method(ping, name="ping")
+        self.assertEqual(sorted(rpc.methods), ["multiply", "ping"])
+        self.assertIs(rpc.methods["ping"], ping)
+
+    def test_methods_is_read_only(self) -> None:
+        def ping() -> str:
+            return "pong"
+
+        rpc = JsonRpcServer()
+
+        def write() -> None:
+            cast("dict[str, Any]", rpc.methods)["ping"] = ping
+
+        # A caller must register through `add_method`, so that the name check runs
+        self.assertRaises(TypeError, write)
+
+    def test_methods_view_ignores_later_writes(self) -> None:
+        # The registry is copy-on-write, so a view holds the state that it was read in
+        def ping() -> str:
+            return "pong"
+
+        rpc = JsonRpcServer()
+        empty = rpc.methods
+        rpc.add_method(ping)
+        with_ping = rpc.methods
+        rpc.remove_method("ping")
+        self.assertEqual(sorted(empty), [])
+        self.assertEqual(sorted(with_ping), ["ping"])
+        self.assertEqual(sorted(rpc.methods), [])
+
+    def test_remove_method(self) -> None:
+        rpc = Handler()
+        self.assertIn("subtract", rpc.methods)
+        self.assertIs(rpc.remove_method("subtract"), Handler.subtract)
+        self.assertNotIn("subtract", rpc.methods)
+        self.rpc_call(
+            '{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}',
+            {
+                "jsonrpc": "2.0",
+                "error": {"code": -32601, "message": "Method not found"},
+                "id": 1,
+            },
+            rpc=rpc,
+        )
+        # The name is free again, so the server accepts it a second time
+        rpc.add_method(Handler.subtract, name="subtract")
+        self.rpc_call(
+            '{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 2}',
+            {"jsonrpc": "2.0", "result": 19, "id": 2},
+            rpc=rpc,
+        )
+
+    def test_remove_method_with_a_prefix(self) -> None:
+        # `remove_method` takes the registry name, which holds the prefix
+        rpc = JsonRpcServer()
+        handler = Handler()
+        rpc.add_object(handler, prefix="handler.")
+        # A bound method is built at every attribute read, so compare with `==`
+        self.assertEqual(rpc.remove_method("handler.get_data"), handler.foo)
+        self.assertNotIn("handler.get_data", rpc.methods)
+        # The other names of that object stay registered
+        self.assertIn("handler.sum", rpc.methods)
+        self.assertRaises(KeyError, rpc.remove_method, "get_data")
+
+    def test_remove_unknown_method(self) -> None:
+        rpc = JsonRpcServer()
+        self.assertRaisesRegex(
+            KeyError,
+            re.escape("Method 'ping' is not registered"),
+            rpc.remove_method,
+            "ping",
+        )
+
+    def test_remove_method_drops_the_memoized_signature(self) -> None:
+        # An invalid-params answer memoizes the signature of the method. `remove_method`
+        # drops that entry, so the server answers the same way after a second add.
+        rpc = Handler()
+        invalid = (
+            '{"jsonrpc": "2.0", "method": "subtract", "params": [1, 2, 3], "id": 1}'
+        )
+        expected = {
+            "jsonrpc": "2.0",
+            "error": {"code": -32602, "message": "Invalid params"},
+            "id": 1,
+        }
+        self.rpc_call(invalid, expected, rpc=rpc)  # Memoizes the signature
+        rpc.add_method(rpc.remove_method("subtract"), name="subtract")
+        self.rpc_call(invalid, expected, rpc=rpc)
+
+    def test_remove_unhashable_method(self) -> None:
+        # An unhashable callable never enters the memo, so the drop finds nothing
+        rpc = JsonRpcServer()
+        method = UnhashableMethod()
+        rpc.add_method(method, name="unhashable")
+        self.assertIs(rpc.remove_method("unhashable"), method)
+        self.assertNotIn("unhashable", rpc.methods)
+
+    def test_concurrent_registration_of_one_name(self) -> None:
+        # Ten threads race to register the same name. `add_method` checks the name and
+        # writes it under one lock, so exactly one thread wins and nine get a
+        # ValueError. Without the lock, several could pass the check together.
+        rpc = JsonRpcServer()
+        barrier = threading.Barrier(10)
+        won: list[int] = []
+        lost: list[int] = []
+
+        def register(n: int) -> None:
+            def method() -> int:
+                return n
+
+            barrier.wait(timeout=5)
+            try:
+                rpc.add_method(method, name="contested")
+            except ValueError:
+                lost.append(n)
+            else:
+                won.append(n)
+
+        threads = [threading.Thread(target=register, args=(n,)) for n in range(10)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertEqual(len(won), 1)
+        self.assertEqual(len(lost), 9)
+        self.assertEqual(sorted(rpc.methods), ["contested"])
+
+    def test_concurrent_calls_and_registry_writes(self) -> None:
+        # Four threads rewrite the registry while four others call it. A reader must
+        # see the registry before a write or after it, and never a partial state.
+        rpc = JsonRpcServer()
+        rpc.add_method(lambda: "pong", name="ping")
+        request = '{"jsonrpc": "2.0", "method": "ping", "id": 1}'
+        expected = b'{"jsonrpc":"2.0","id":1,"result":"pong"}'
+        failures: list[str] = []
+        barrier = threading.Barrier(8)
+
+        def churn(n: int) -> None:
+            barrier.wait(timeout=5)
+            for i in range(50):
+                name = f"m{n}.{i}"
+                rpc.add_method(lambda: None, name=name)
+                # Reading the whole view while another thread writes must not raise
+                if "ping" not in dict(rpc.methods):
+                    failures.append(f"lost 'ping' during {name}")
+                rpc.remove_method(name)
+
+        def call(_: int) -> None:
+            barrier.wait(timeout=5)
+            answers = {rpc.call(request) for _i in range(200)}
+            if answers != {expected}:
+                failures.append(f"wrong answer to 'ping': {answers!r}")
+
+        threads = [threading.Thread(target=churn, args=(n,)) for n in range(4)]
+        threads += [threading.Thread(target=call, args=(n,)) for n in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+        self.assertEqual(failures, [])
+        self.assertEqual(sorted(rpc.methods), ["ping"])
+
+    def test_unreferenceable_method(self) -> None:
+        # The memo holds weak keys, so a callable that takes no weak reference cannot
+        # enter it. The server must answer from an uncached signature instead of
+        # letting the TypeError reach the invalid-params handler.
+        rpc = JsonRpcServer()
+        rpc.add_method(UnreferenceableMethod(), name="unreferenceable")
+        for id_ in (1, 2):  # Twice, because the first call cannot warm the memo
+            with self.subTest(call=id_):
+                self.rpc_call(
+                    f'{{"jsonrpc": "2.0", "method": "unreferenceable",'
+                    f' "params": [1, 2, 3], "id": {id_}}}',
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32602, "message": "Invalid params"},
+                        "id": id_,
+                    },
+                    rpc=rpc,
+                )
+        self.assertIs(
+            rpc.remove_method("unreferenceable").__class__, UnreferenceableMethod
+        )
+
+    def test_memo_does_not_outlive_a_removed_method(self) -> None:
+        # A method removed while a call to it is in flight is memoized after the
+        # removal, so `remove_method` cannot drop that entry. Weak keys are what stops
+        # the entry from pinning the callable, and the object that it is bound to.
+        class Handler:
+            @rpc_method
+            def boom(self, _a: float) -> NoReturn:
+                started.set()
+                stop.wait(timeout=5)  # Hold the call open across the removal
+                msg = "from the body"
+                raise TypeError(msg)
+
+        started = threading.Event()
+        stop = threading.Event()
+        rpc = JsonRpcServer()
+        handler = Handler()
+        rpc.add_object(handler)
+        request = '{"jsonrpc": "2.0", "method": "boom", "params": [1], "id": 1}'
+        thread = threading.Thread(target=rpc.call, args=(request,))
+        with self.assertLogs(_LOGGER_NAME, "ERROR"):
+            thread.start()
+            self.assertTrue(started.wait(timeout=5))
+            rpc.remove_method("boom")  # The memo holds nothing for it yet
+            stop.set()
+            thread.join(timeout=5)
+        # The call memoized the signature after the removal. Dropping the last strong
+        # reference must still release the handler.
+        dead = weakref.ref(handler)
+        del handler
+        gc.collect()
+        self.assertIsNone(dead())
+
+    def test_add_method_rejects_unusable_callables(self) -> None:
+        # The server calls a method and then encodes what the method returns. These
+        # kinds fail at every call, so `add_method` refuses them at registration.
+        rpc = JsonRpcServer()
+        for label, method, kind in (
+            ("not callable", 42, "objects that are not callable"),
+            ("coroutine function", coroutine_method, "coroutine functions"),
+            (
+                "async generator function",
+                async_generator_method,
+                "async generator functions",
+            ),
+            ("generator function", generator_method, "generator functions"),
+            # The `inspect` predicates read through `functools.partial`
+            (
+                "partial of a coroutine function",
+                partial(coroutine_method),
+                "coroutine functions",
+            ),
+            (
+                "partial of a generator function",
+                partial(generator_method),
+                "generator functions",
+            ),
+        ):
+            with self.subTest(method=label):
+                self.assertRaisesRegex(
+                    ValueError,
+                    re.escape(f"Cannot register {kind}: 'unusable'"),
+                    rpc.add_method,
+                    method,
+                    name="unusable",
+                )
+        self.assertEqual(sorted(rpc.methods), [])
+
+    def test_registration_accepts_every_other_callable(self) -> None:
+        # The check must refuse nothing that the server can use. A class returns an
+        # instance, and a callable instance answers like any function.
+        rpc = JsonRpcServer({"dict": dict, "len": len})
+        rpc.add_method(UnhashableMethod(), name="instance")
+        rpc.add_method(lambda: [1], name="lambda")
+        self.assertEqual(sorted(rpc.methods), ["dict", "instance", "lambda", "len"])
+        self.rpc_call(
+            '{"jsonrpc": "2.0", "method": "len", "params": [[1, 2]], "id": 1}',
+            {"jsonrpc": "2.0", "result": 2, "id": 1},
+            rpc=rpc,
+        )
+
+    def test_constructor_rejects_a_non_callable(self) -> None:
+        # Without the check the server answers a call to that name with -32602 Invalid
+        # params, which blames the parameters of the request for a fault in the
+        # registration. The error names every offending key, sorted.
+        self.assertRaisesRegex(
+            ValueError,
+            re.escape("Cannot register objects that are not callable: 'a', 'z'"),
+            JsonRpcServer,
+            {"z": 1, "a": 2, "ok": len},
+        )
+
+    def test_constructor_rejects_coroutine_functions(self) -> None:
+        # The mapping given to the constructor is a registration path of its own, so it
+        # gets the same check.
+        self.assertRaisesRegex(
+            ValueError,
+            re.escape("Cannot register coroutine functions: 'first', 'second'"),
+            JsonRpcServer,
+            {"first": coroutine_method, "second": coroutine_method, "third": len},
+        )
+
+    def test_subclass_rejects_a_coroutine_function(self) -> None:
+        # `__init__` calls `add_object(self)`, so a marked coroutine method of a
+        # subclass fails at construction rather than at the first call.
+        class AsyncHandler(JsonRpcServer):
+            @rpc_method
+            async def fetch(self) -> int:
+                return 1
+
+            @rpc_method(name="renamed")
+            async def other(self) -> int:
+                return 2
+
+        self.assertRaisesRegex(
+            ValueError,
+            re.escape("Cannot register coroutine functions: 'fetch', 'renamed'"),
+            AsyncHandler,
+        )
+
+    def test_add_object_rejects_a_routine_that_is_not_callable(self) -> None:
+        # `inspect.isroutine` is not a subset of `callable`, so the scan of
+        # `add_object` does not make the callable test redundant.
+        # `inspect.ismethoddescriptor` accepts any type that has `__get__` and has
+        # neither `__set__` nor `__delete__`. It asks nothing about `__call__`. An
+        # instance attribute holds such an object without the descriptor protocol
+        # running, so the scan finds the object itself. A `classmethod` object reaches
+        # the same place the same way.
+        class Descriptor:
+            __rpc__: str | None = None
+
+            def __get__(self, obj: object, objtype: type | None = None) -> int:
+                return 42
+
+        class Holder:
+            def __init__(self) -> None:
+                self.descriptor = Descriptor()
+
+        rpc = JsonRpcServer()
+        self.assertRaisesRegex(
+            ValueError,
+            re.escape("Cannot register objects that are not callable: 'descriptor'"),
+            rpc.add_object,
+            Holder(),
+        )
+        self.assertEqual(sorted(rpc.methods), [])
+
+    def test_add_object_rejects_unusable_methods(self) -> None:
+        # `add_object` reports every offending name at once and registers nothing, the
+        # same way that it answers a duplicate name.
+        class Mixed:
+            @rpc_method
+            def first(self) -> Iterator[int]:
+                yield 1
+
+            @rpc_method(name="second")
+            def second(self) -> Iterator[int]:
+                yield 2
+
+            @rpc_method
+            def ping(self) -> str:
+                return "pong"
+
+        rpc = JsonRpcServer()
+        self.assertRaisesRegex(
+            ValueError,
+            re.escape("Cannot register generator functions: 'obj.first', 'obj.second'"),
+            rpc.add_object,
+            Mixed(),
+            prefix="obj.",
+        )
+        # The failed scan registered none of the three methods
+        self.assertEqual(sorted(rpc.methods), [])

@@ -99,6 +99,55 @@ server.add_method(sub, name="subtract")
 server.add_method(lambda a, b: a % b, name="modulo")
 ```
 
+Every registration path refuses a callable that the server cannot use, with a `ValueError`. It refuses:
+
+- an object that is not callable at all
+- a coroutine function (`async def`), because `call()` is synchronous and nothing awaits it
+- an async generator function
+- a generator function
+
+Wrap the call in a synchronous callable that returns an encodable value, and register that instead:
+
+```python
+import asyncio
+
+
+async def fetch(url): ...
+
+
+# ValueError: Cannot register coroutine functions: 'fetch'
+server.add_method(fetch)
+
+# Register a synchronous callable that runs it instead
+server.add_method(lambda url: asyncio.run(fetch(url)), name="fetch")
+```
+
+#### Reading and changing the registry
+
+The `methods` property lists the registry, from RPC method name to callable. It gives a read-only view, so register through `add_method()` and `add_object()`.
+
+```python
+sorted(server.methods)
+# ['add', 'cube', 'modulo', 'multiply', 'square', 'subtract']
+
+"modulo" in server.methods
+# True
+```
+
+`remove_method()` takes one name back out of the registry, and returns the callable that the name held. The server answers a later request for that name with Method not found (`-32601`). It raises `KeyError` for a name that the registry does not hold.
+
+```python
+modulo = server.remove_method("modulo")  # KeyError if it is not registered
+server.add_method(modulo, name="mod")  # The old name is free again
+```
+
+`add_object()` puts a prefix before every name that it registers, and `remove_method()` takes the registry name. Give it the prefix too:
+
+```python
+server.add_object(MathUtils(), prefix="utils.")
+server.remove_method("utils.multiply")
+```
+
 #### Error handling
 The server handles errors as follows:
 - `JsonRpcError` carries a custom code for an implementation-defined or an application-defined error

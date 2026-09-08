@@ -8,11 +8,14 @@ from __future__ import annotations
 
 __all__ = ["JsonRpcError", "JsonRpcServer", "rpc_method"]
 
+import contextlib
 import inspect
 import logging
 from enum import Enum
 from threading import Lock
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar, overload
+from weakref import WeakKeyDictionary
 
 from orjson import Fragment, loads
 
@@ -98,6 +101,39 @@ def rpc_method(
     return decorator if _func is None else decorator(_func)
 
 
+_UNUSABLE: tuple[tuple[str, Callable[[Any], bool]], ...] = (
+    ("objects that are not callable", lambda obj: not callable(obj)),
+    ("coroutine functions", inspect.iscoroutinefunction),
+    ("async generator functions", inspect.isasyncgenfunction),
+    ("generator functions", inspect.isgeneratorfunction),
+)
+
+
+def _reject_unusable(methods: Mapping[str, Callable[..., Any]]) -> None:
+    """Refuse every name that holds a callable the server cannot use.
+
+    The other kinds of callables would fail to be encoded and sent an internal error. An object that is not
+    callable gives -32602 Invalid params instead, which blames the parameters of the
+    request.
+
+    Two kinds still pass this check:
+     - An instance whose `__call__` is a coroutine function.
+     - A callable that returns an object the encoder refuses (handled in `_encode`).
+
+    Args:
+        methods: The names and callables to check.
+
+    Raises:
+        ValueError: If one or more of the values is a kind that the server cannot use.
+    """
+    for label, is_unusable in _UNUSABLE:
+        found = sorted(name for name, method in methods.items() if is_unusable(method))
+        if found:
+            names = ", ".join(map(repr, found))
+            msg = f"Cannot register {label}: {names}"
+            raise ValueError(msg)
+
+
 class JsonRpcServer:
     """A JSON-RPC 2.0 server that dispatches requests to the methods registered on it.
 
@@ -110,6 +146,10 @@ class JsonRpcServer:
     - Decorate the methods of a subclass of this class with `rpc_method`.
     - Call `add_method()` to register a single callable.
     - Call `add_object()` to register every `rpc_method` decorated method of an object.
+
+    Read the `methods` property to see the registry. Call `remove_method()` to take one
+    name out of it again. Every registration path refuses a callable that the server
+    cannot use. See `add_method()` for the kinds that it refuses.
 
     Example:
         >>> class MathServer(JsonRpcServer):
@@ -135,14 +175,33 @@ class JsonRpcServer:
                 This path does not read the name set by `rpc_method` on the callables.
             dumps_kwargs: Extra keyword arguments for `orjson.dumps()`, such as
                 `{"option": orjson.OPT_INDENT_2}`.
+
+        Raises:
+            ValueError: If `methods` holds a callable that the server cannot use
+                (objects that are not callable, coroutines, async generators,
+                generators), or if a marked method of this instance is one.
         """
         self._methods: dict[str, Callable[..., Any]] = (
             {} if methods is None else dict(methods)
         )
+        _reject_unusable(self._methods)
         self._dumps = _bind_dumps(dumps_kwargs)
-        self._signatures: dict[Callable[..., Any], Signature] = {}
+        # Weak keys, so that an entry cannot outlive the callable
+        self._signatures: WeakKeyDictionary[Callable[..., Any], Signature] = (
+            WeakKeyDictionary()
+        )
         self._lock = Lock()
         self.add_object(self)
+
+    @property
+    def methods(self) -> Mapping[str, Callable[..., Any]]:
+        """A read-only view of the registry, from RPC method name to callable.
+
+        The view holds the registry as it was at the moment of the read, and a
+        later write does not change it. Read the property again to see the new state.
+        """
+        # `_methods` is copy-on-write, so the underlying dict is never mutated.
+        return MappingProxyType(self._methods)
 
     def add_object(self, obj: object, *, prefix: str = "") -> None:
         """Register every `rpc_method`-marked method of an object.
@@ -150,13 +209,15 @@ class JsonRpcServer:
         This method is thread safe.
 
         Args:
-            obj: The object to scan. The server ignores everything else that it holds.
+            obj: The object to scan for rpc marked routines. Everything else is ignored.
             prefix: Text to put before every name from this object. Use it to keep two
                 objects that have the same method names separate.
 
         Raises:
-            ValueError: If two marked methods resolve to the same name, or if one or
-                more of the new names are already registered.
+            ValueError: If two marked methods resolve to the same name, if the server
+                cannot use one or more of the methods (objects that are not callable,
+                coroutines, async generators, generators), or if one or more of the new
+                names are already registered.
         """
         new: dict[str, Callable[..., Any]] = {}
         duplicate: set[str] = set()
@@ -170,13 +231,14 @@ class JsonRpcServer:
             names = ", ".join(map(repr, sorted(duplicate)))
             msg = f"Duplicate method names: {names}"
             raise ValueError(msg)
+        _reject_unusable(new)
         with self._lock:
             clash = new.keys() & self._methods.keys()
             if clash:
                 names = ", ".join(map(repr, sorted(clash)))
                 msg = f"Methods already registered: {names}"
                 raise ValueError(msg)
-            self._methods = {**self._methods, **new}  # Avoids partial concurrent reads
+            self._methods = {**self._methods, **new}  # Copy-on-write, see `methods`
 
     def add_method(self, method: F, *, name: str | None = None) -> F:
         """Register a single callable as an RPC method.
@@ -195,14 +257,48 @@ class JsonRpcServer:
             The same callable, unchanged.
 
         Raises:
-            ValueError: If the name is already registered.
+            ValueError: If the name is already registered, or if the server cannot use
+                the method (objects that are not callable, coroutines, async generators,
+                generators).
         """
         name = name or getattr(method, "__rpc__", None) or method.__name__
+        _reject_unusable({name: method})
         with self._lock:
             if name in self._methods:
                 msg = f"Method {name!r} already registered"
                 raise ValueError(msg)
-            self._methods[name] = method
+            self._methods = {**self._methods, name: method}  # Copy-on-write
+        return method
+
+    def remove_method(self, name: str) -> Callable[..., Any]:
+        """Remove one RPC method from the registry.
+
+        This method is thread safe. The server answers a later request for that name
+        with the -32601 Method not found error.
+
+        Args:
+            name: The registry name of the method to remove. It is the name that a
+                client calls, and it includes the prefix that `add_object()` added.
+
+        Returns:
+            The callable that the name held.
+
+        Raises:
+            KeyError: If the name is not registered.
+        """
+        with self._lock:
+            # Look the name up first.
+            try:
+                method = self._methods[name]
+            except KeyError:
+                msg = f"Method {name!r} is not registered"
+                raise KeyError(msg) from None
+            methods = dict(self._methods)
+            del methods[name]
+            self._methods = methods  # Copy-on-write
+        # `_signature` still behaves normally if this races
+        with contextlib.suppress(KeyError, TypeError):
+            del self._signatures[method]
         return method
 
     def _signature(self, method: Callable[..., Any]) -> Signature:
@@ -211,10 +307,11 @@ class JsonRpcServer:
         try:
             return cache[method]
         except KeyError:
-            pass
+            signature = cache[method] = inspect.signature(method)
         except TypeError:
-            return inspect.signature(method)  # if the callable is unhashable
-        signature = cache[method] = inspect.signature(method)
+            # The callable is unhashable, or it takes no weak reference.
+            # An uncached answer is the only option.
+            signature = inspect.signature(method)
         return signature
 
     def _validate_and_execute(self, request: Any) -> tuple[Any, _Id | _Sentinel, bool]:  # noqa: C901, PLR0911, PLR0912

@@ -1,5 +1,6 @@
 """This example module details the different ways of adding rpc methods."""
 
+import asyncio
 import math
 
 from pyjsonrpc2.server import JsonRpcServer, rpc_method
@@ -76,6 +77,88 @@ try:
     server.add_method(lambda x: x**2, name="square")
 except ValueError as e:
     print(e)
+
+
+# Every registration path refuses a callable that the server cannot use. The server
+# calls a method and then encodes what it returns, so these four kinds fail every call.
+async def fetch(x):
+    return x
+
+
+async def stream(x):
+    yield x
+
+
+def numbers(x):
+    yield x
+
+
+for name, method in (
+    ("not_callable", 42),
+    ("fetch", fetch),
+    ("stream", stream),
+    ("numbers", numbers),
+):
+    try:
+        server.add_method(method, name=name)
+    except ValueError as e:
+        print(e)
+# Output: Cannot register objects that are not callable: 'not_callable'
+# Output: Cannot register coroutine functions: 'fetch'
+# Output: Cannot register async generator functions: 'stream'
+# Output: Cannot register generator functions: 'numbers'
+
+# Wrap the coroutine in a synchronous callable, and register that one instead.
+server.add_method(lambda x: asyncio.run(fetch(x)), name="fetch")
+print(server.call('{"jsonrpc": "2.0", "method": "fetch", "params": [1], "id": 9}'))
+# Output: b'{"jsonrpc":"2.0","id":9,"result":1}'
+server.remove_method("fetch")
+
+# A class and a builtin are callable and return a value that the encoder handles, so
+# the server accepts both.
+server.add_method(sorted, name="sorted")
+print(
+    server.call('{"jsonrpc": "2.0", "method": "sorted", "params": [[3, 1]], "id": 10}')
+)
+# Output: b'{"jsonrpc":"2.0","id":10,"result":[1,3]}'
+server.remove_method("sorted")
+
+
+# The `methods` property lists the registry, from rpc method name to callable.
+print(sorted(server.methods))
+# Output: ['add', 'cube', 'divide', 'get_version', 'ln', 'modulo', 'multiply', 'square', 'subtract']
+
+# The property gives a read-only view. Register through add_method() and add_object().
+try:
+    server.methods["square"] = lambda x: x**2
+except TypeError as e:
+    print(e)  # Output: 'mappingproxy' object does not support item assignment
+
+
+# remove_method() takes one name back out of the registry, and returns the callable
+# that the name held. The name is free again afterwards.
+removed = server.remove_method("modulo")
+print(removed(7, 3))  # Output: 1
+print("modulo" in server.methods)  # Output: False
+server.add_method(removed, name="mod")
+
+# A view that you read before a write does not follow that write.
+before = server.methods
+server.remove_method("ln")
+print("ln" in before, "ln" in server.methods)  # Output: True False
+
+# remove_method() raises a KeyError for a name that the registry does not hold.
+try:
+    server.remove_method("ln")
+except KeyError as e:
+    print(e)  # Output: "Method 'ln' is not registered"
+
+# add_object() puts a prefix before every name that it registers. remove_method() takes
+# the registry name, so the name that you give to it holds that prefix too.
+server.add_object(MathUtils(), prefix="utils.")
+print(sorted(name for name in server.methods if name.startswith("utils.")))
+# Output: ['utils.divide', 'utils.multiply']
+server.remove_method("utils.divide")
 
 
 # A few example calls
