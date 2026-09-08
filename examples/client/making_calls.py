@@ -58,7 +58,7 @@ try:
     client.request("subtract", 42, subtrahend=23)
 except ValueError as e:
     print(e)
-# Output: 'params' is either an array or an object, so parameters cannot be both positional and keyword
+# Output: Parameters cannot be both positional and keyword ('params' must be either an array or an object)
 
 
 # The method name is positional-only. A parameter that is also called "method"

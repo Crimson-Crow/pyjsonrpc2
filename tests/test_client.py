@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import unittest
 from concurrent.futures import CancelledError, wait
-from typing import Any, NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from pyjsonrpc2.client import InvalidResponseError, JsonRpcClient, JsonRpcError
 from pyjsonrpc2.server import JsonRpcServer, rpc_method
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _LOGGER_NAME = "pyjsonrpc2.client"
 
@@ -58,12 +62,18 @@ class JsonRpcClientTest(unittest.TestCase):
             self.fail("Expected a response, got None")
         return self.client.handle(response)
 
-    def assert_malformed(self, response: str) -> None:
-        """A malformed response must fail the future that it matches, not the reader."""
+    def assert_malformed(self, response: str, expected: str) -> None:
+        """A malformed response must fail the future that it matches, not the reader.
+
+        Args:
+            response: The raw response to give to the client.
+            expected: The start of the message that the future must raise. It tells the
+                two malformed shapes apart, because they share an exception type.
+        """
         client = JsonRpcClient()
         _, future = client.request("subtract")
         self.assertEqual(client.handle(response), [])
-        self.assertRaises(InvalidResponseError, future.result)
+        self.assertRaisesRegex(InvalidResponseError, re.escape(expected), future.result)
 
     def test_positional_parameters(self) -> None:
         request, _ = self.client.request("subtract", 42, 23)
@@ -95,20 +105,54 @@ class JsonRpcClientTest(unittest.TestCase):
                 request, _ = self.client.request("subtract")
                 self.assertEqual(json.loads(request)["id"], expected_id)
 
-    def test_mixed_parameters(self) -> None:
-        # "params" is either an array or an object, so there is nowhere to put both
+    def entry_points(self) -> tuple[tuple[str, Callable[..., Any]], ...]:
+        """Return the four calls that build a request object, with a label for each."""
         batch = self.client.batch()
-        for label, call in (
+        return (
             ("request", self.client.request),
             ("notify", self.client.notify),
             ("batch.request", batch.request),
             ("batch.notify", batch.notify),
-        ):
+        )
+
+    def test_mixed_parameters(self) -> None:
+        # "params" is either an array or an object, so there is nowhere to put both
+        expected = re.escape(
+            "Parameters cannot be both positional and keyword"
+            " ('params' must be either an array or an object)"
+        )
+        for label, call in self.entry_points():
             with self.subTest(call=label):
-                self.assertRaises(ValueError, call, "subtract", 42, subtrahend=23)
+                self.assertRaisesRegex(
+                    ValueError, expected, call, "subtract", 42, subtrahend=23
+                )
 
     def test_method_must_be_a_string(self) -> None:
-        self.assertRaises(TypeError, self.client.request, 123)
+        expected = re.escape("'method' must be a string (type: <class 'int'>)")
+        for label, call in self.entry_points():
+            with self.subTest(call=label):
+                self.assertRaisesRegex(TypeError, expected, call, 123)
+
+    def test_unencodable_parameters(self) -> None:
+        # `request()` takes an id before it encodes. When the encoder then refuses the
+        # parameters, the caller never receives the future, so the request must not
+        # stay pending.
+        self.assertRaises(TypeError, self.client.request, "record", object())
+        self.assertEqual(self.client.cancel_pending(), 0)
+        # The id itself is spent. Ids must be unique, and a gap in them costs nothing.
+        request, _ = self.client.request("subtract")
+        self.assertEqual(json.loads(request)["id"], 2)
+
+    def test_unencodable_batch_parameters_stay_pending(self) -> None:
+        # A batch keeps the opposite rule, on purpose. `batch.request()` gives the
+        # future to the caller before `encode()` runs, so the caller can still release
+        # the call after the encoder refuses it.
+        batch = self.client.batch()
+        future = batch.request("record", object())
+        self.assertRaises(TypeError, batch.encode)
+        self.assertFalse(future.done())
+        self.assertEqual(self.client.cancel_pending(), 1)
+        self.assertRaises(CancelledError, future.result)
 
     def test_method_is_positional_only(self) -> None:
         # `method` is positional-only. A parameter of the same name therefore goes
@@ -195,7 +239,11 @@ class JsonRpcClientTest(unittest.TestCase):
 
     def test_empty_batch(self) -> None:
         # The spec rejects an empty batch array
-        self.assertRaises(ValueError, self.client.batch().encode)
+        self.assertRaisesRegex(
+            ValueError,
+            re.escape("A batch request must hold at least one call"),
+            self.client.batch().encode,
+        )
 
     def test_batch_stays_open_after_encoding(self) -> None:
         batch = self.client.batch()
@@ -266,42 +314,72 @@ class JsonRpcClientTest(unittest.TestCase):
     def test_malformed_response(self) -> None:
         # The `error` member is what separates these cases, so each test names it in
         # full. Without them, one check could still pass for the wrong reason.
-        for label, response in (
-            ("missing jsonrpc", '{"id": 1, "result": 19}'),
-            ("wrong version", '{"jsonrpc": "1.0", "id": 1, "result": 19}'),
-            ("neither result nor error", '{"jsonrpc": "2.0", "id": 1}'),
+        # A wrong envelope gives "Not a response object". An envelope that is right
+        # around a wrong `error` member gives "Not an error object".
+        not_a_response = "Not a response object: "
+        not_an_error = "Not an error object: "
+        for label, response, expected in (
+            ("missing jsonrpc", '{"id": 1, "result": 19}', not_a_response),
+            (
+                "wrong version",
+                '{"jsonrpc": "1.0", "id": 1, "result": 19}',
+                not_a_response,
+            ),
+            ("neither result nor error", '{"jsonrpc": "2.0", "id": 1}', not_a_response),
             (
                 "both result and error",
                 (
                     '{"jsonrpc": "2.0", "id": 1, "result": 19,'
                     ' "error": {"code": -1, "message": "m"}}'
                 ),
+                not_a_response,
             ),
-            ("error is a string", '{"jsonrpc": "2.0", "id": 1, "error": "nope"}'),
-            ("error is an array", '{"jsonrpc": "2.0", "id": 1, "error": [-1, "m"]}'),
+            (
+                "error is a string",
+                '{"jsonrpc": "2.0", "id": 1, "error": "nope"}',
+                not_an_error,
+            ),
+            (
+                "error is an array",
+                '{"jsonrpc": "2.0", "id": 1, "error": [-1, "m"]}',
+                not_an_error,
+            ),
             (
                 "error without a code",
                 '{"jsonrpc": "2.0", "id": 1, "error": {"message": "m"}}',
+                not_an_error,
             ),
             (
                 "error without a message",
                 '{"jsonrpc": "2.0", "id": 1, "error": {"code": -1}}',
+                not_an_error,
             ),
         ):
             with self.subTest(response=label):
-                self.assert_malformed(response)
+                self.assert_malformed(response, expected)
 
     def test_unusable_payload(self) -> None:
-        # The client can settle nothing in these payloads, so `handle()` raises instead
-        for label, response in (
-            ("invalid json", '{"jsonrpc": "2.0", "id": 1, "result'),
-            ("number", "1"),
-            ("string", '"foobar"'),
-            ("null", "null"),
-            ("empty batch", "[]"),
+        # The client can settle nothing in these payloads, so `handle()` raises
+        # instead. Each message names why, so one check cannot pass for another reason.
+        not_an_object = "Response is not an object or an array (type: "
+        for label, response, expected in (
+            (
+                "invalid json",
+                '{"jsonrpc": "2.0", "id": 1, "result',
+                "Response is not valid JSON: ",
+            ),
+            ("number", "1", not_an_object + "<class 'int'>)"),
+            ("string", '"foobar"', not_an_object + "<class 'str'>)"),
+            ("null", "null", not_an_object + "<class 'NoneType'>)"),
+            ("empty batch", "[]", "Response is an empty batch"),
         ):
             with self.subTest(response=label):
-                self.assertRaises(InvalidResponseError, self.client.handle, response)
+                self.assertRaisesRegex(
+                    InvalidResponseError,
+                    re.escape(expected),
+                    self.client.handle,
+                    response,
+                )
 
     def test_junk_inside_a_batch_is_skipped(self) -> None:
         # One unusable element must not cost the others their answers
@@ -431,7 +509,12 @@ class JsonRpcClientTest(unittest.TestCase):
         # client refuses it.
         client = JsonRpcClient(id_iterator=iter([7, 7]))
         client.request("subtract")
-        self.assertRaises(ValueError, client.request, "subtract")
+        self.assertRaisesRegex(
+            ValueError,
+            re.escape("Request id 7 is already awaiting a response"),
+            client.request,
+            "subtract",
+        )
 
     def test_response_from_another_thread(self) -> None:
         # This is why `request()` returns a future: the thread that reads the
