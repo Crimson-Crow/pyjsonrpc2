@@ -270,13 +270,23 @@ class JsonRpcClient:
             `Future.result()`.
 
         Raises:
-            TypeError: If `method` is not a string.
+            TypeError: If `method` is not a string, or if the encoder refuses the
+                parameters.
             ValueError: If the caller gives positional and keyword parameters together,
                 or if the id iterator gives an id that already awaits a response.
         """
         request = _build_request(method, args, kwargs)
         future = self._register(request)
-        return self._dumps(request), future
+        try:
+            data = self._dumps(request)
+        except BaseException:
+            # The encoder refused the parameters, so the caller never receives this
+            # future. Remove the entry that `_register` made, or the request stays
+            # pending for the life of the client.
+            with self._lock:
+                del self._pending[request["id"]]
+            raise
+        return data, future
 
     def notify(self, method: str, /, *args: Any, **kwargs: Any) -> bytes:
         """Build one notification, which the server does not answer.
@@ -447,7 +457,7 @@ class JsonRpcClient:
             if exc is None:
                 future.cancel()
                 continue
-            try:  # Slower than contextlib.suppress # noqa: SIM105
+            try:
                 future.set_exception(exc)
             except InvalidStateError:
                 pass  # The caller canceled this request first.
