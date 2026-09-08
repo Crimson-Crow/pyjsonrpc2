@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pyperf
@@ -30,7 +32,15 @@ def make_runner(description: str) -> tuple[pyperf.Runner, str | None]:
         The runner, and the substring that `-b` gave. The substring is `None` when the
         caller asked for every benchmark.
     """
-    runner = pyperf.Runner(add_cmdline_args=_forward_cmdline_args)
+    # pyperf respawns each worker from `sys.argv`, which names this file as a path.
+    # A worker started that way has no parent package, so `from . import make_runner`
+    # fails in it. Name the module instead, the same way tox starts the suite.
+    module = f"{__name__}.{Path(sys.argv[0]).stem}"
+    # pyperf puts `sys.executable` in front of these itself, so do not name it here.
+    runner = pyperf.Runner(
+        add_cmdline_args=_forward_cmdline_args,
+        program_args=("-m", module),
+    )
     runner.argparser.add_argument(
         "-b",
         "--benchmark",

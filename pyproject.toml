@@ -59,6 +59,7 @@ ignore = [
   "PT009",
   "PT027",
   "ANN401",
+  "SIM105",  # contextlib.suppress is slower than try-except-pass
 ]
 per-file-ignores."examples/*" = [ "ANN", "EM", "ERA001", "INP001", "T201", "TRY003" ]
 pydocstyle.convention = "google"
@@ -67,7 +68,7 @@ pydocstyle.convention = "google"
 project-includes = [ "src", "tests" ]
 python-version = "3.11"
 preset = "strict"
-# `typing.override` is 3.12+, setUpClass in tests.
+# `typing.override` is 3.12+
 errors.missing-override-decorator = false
 
 [tool.coverage]
@@ -118,13 +119,13 @@ parallel_show_output = true
 description = "run the server benchmark suite"
 deps = [ "pyperf" ]
 commands_pre = [ [ "python", "-c", "import pathlib; pathlib.Path('.benchmarks').mkdir(exist_ok=True)" ] ]
-commands = [ [ "python", "benchmarks/bench_server.py", { replace = "posargs", extend = true } ] ]
+commands = [ [ "python", "-m", "benchmarks.bench_server", { replace = "posargs", extend = true } ] ]
 
 [tool.tox.env.bench-client]
 description = "run the client benchmark suite"
 deps = [ "pyperf" ]
 commands_pre = [ [ "python", "-c", "import pathlib; pathlib.Path('.benchmarks').mkdir(exist_ok=True)" ] ]
-commands = [ [ "python", "benchmarks/bench_client.py", { replace = "posargs", extend = true } ] ]
+commands = [ [ "python", "-m", "benchmarks.bench_client", { replace = "posargs", extend = true } ] ]
 
 [tool.tox.env.bench-compare]
 description = "compare two benchmark result files"

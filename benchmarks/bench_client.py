@@ -188,7 +188,7 @@ def _bench_handle_parse_error(loops: int) -> float:
     gc.disable()
     t0 = pyperf.perf_counter()
     for _ in range_it:
-        try:  # noqa: SIM105
+        try:
             handle(b'{"jsonrpc": "2.0", "id": 1, "result": 19')
         except InvalidResponseError:
             pass
