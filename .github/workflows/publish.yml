@@ -15,7 +15,7 @@ jobs:
         with:
           fetch-depth: 0 # The ancestry check needs history, not a shallow clone
           filter: blob:none
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
 
       - name: Verify the tag matches the project version
         run: |
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
       - run: uv build
       - uses: actions/upload-artifact@v7.0.1
         with:
