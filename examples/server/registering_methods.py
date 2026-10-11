@@ -76,7 +76,7 @@ server.add_method(lambda a, b: a % b, name="modulo")
 try:
     server.add_method(lambda x: x**2, name="square")
 except ValueError as e:
-    print(e)
+    print(e)  # Output: Method 'square' already registered
 
 
 # Every registration path refuses a callable that the server cannot use. The server

@@ -1,10 +1,10 @@
 [build-system]
 build-backend = "uv_build"
-requires = [ "uv-build>=0.12,<0.13" ]
+requires = [ "uv_build>=0.13,<0.14" ]
 
 [project]
 name = "pyjsonrpc2"
-version = "3.0.0"
+version = "3.0.1"
 description = "A correct, transport-agnostic Python implementation of the JSON-RPC 2.0 protocol."
 readme = "README.md"
 keywords = [ "client", "json", "json-rpc", "jsonrpc", "rpc", "server" ]
@@ -21,6 +21,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
   "Typing :: Typed",
 ]
 dependencies = [ "orjson>=3.9" ]
@@ -93,6 +94,7 @@ env_list = [
 "3.12" = [ "3.12" ]
 "3.13" = [ "3.13" ]
 "3.14" = [ "3.14" ]
+"3.15" = [ "3.15" ]
 
 [tool.tox.env_run_base]
 description = "run the test driver with {basepython}"
