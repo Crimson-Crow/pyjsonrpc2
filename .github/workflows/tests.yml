@@ -37,7 +37,7 @@ jobs:
       - run: tox
         env:
           TOX_GH_MAJOR_MINOR: ${{ matrix.python-version }}
-      - uses: actions/upload-artifact@v7.0.1
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: coverage-${{ matrix.python-version }}
           path: .tox/.coverage.*
@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: astral-sh/setup-uv@v10.3.0
       - run: uv tool install tox --with tox-uv
-      - uses: actions/download-artifact@v8.0.1
+      - uses: actions/download-artifact@v8.0.2
         with:
           pattern: coverage-*
           merge-multiple: true
