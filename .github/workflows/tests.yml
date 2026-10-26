@@ -20,7 +20,7 @@ jobs:
       RUFF_OUTPUT_FORMAT: github
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: j178/prek-action@v3.0.1
+      - uses: j178/prek-action@v3.0.2
         with:
           extra-args: --all-files --hook-stage manual
 
